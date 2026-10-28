@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
-import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2 } from "lucide-react"
+import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2 } from "lucide-react"
 import { bootFarcaster, composeOnFarcaster } from "@/lib/farcaster"
+import { executeClaimOnBase, type ClaimStatus } from "@/lib/web3-claim"
 import {
   accrued,
   cleanHandle,
@@ -217,6 +218,7 @@ export default function App() {
             </div>
             <div className={tab === "network" || tab === "invite" ? "hidden lg:block" : ""}>
               <TokenPanel
+                balance={shownBalance}
                 payout={miner.payout}
                 onPayout={setPayout}
                 era={quote.era}
@@ -761,17 +763,23 @@ function FeedRow({ handle, text, ago, you = false }: { handle: string; text: str
 }
 
 function TokenPanel({
+  balance,
   payout,
   onPayout,
   era,
   reward,
 }: {
+  balance: number
   payout: string
   onPayout: (value: string) => void
   era: number
   reward: number
 }) {
   const [copied, setCopied] = useState(false)
+  const [claimStatus, setClaimStatus] = useState<ClaimStatus>("idle")
+  const [statusMsg, setStatusMsg] = useState("")
+  const [txHash, setTxHash] = useState("")
+
   const payoutOk = validPayout(payout)
   const facts = [
     ["Ký hiệu", TOKEN_SYMBOL],
@@ -784,13 +792,126 @@ function TokenPanel({
     ["Thưởng lúc này", `${formatTokens(reward)} / phiên`],
   ]
 
+  async function handleConnectWallet() {
+    if (typeof window !== "undefined" && (window as any).ethereum) {
+      try {
+        const accounts = await (window as any).ethereum.request({ method: "eth_requestAccounts" })
+        if (accounts && accounts[0]) {
+          onPayout(accounts[0])
+        }
+      } catch (err: any) {
+        alert(err.message || "Không thể kết nối ví")
+      }
+    } else {
+      alert("Không tìm thấy ví Web3. Nếu trên điện thoại, vui lòng mở trong Warpcast hoặc trình duyệt ví (MetaMask, Coinbase Wallet).")
+    }
+  }
+
+  async function handleClaim() {
+    if (!payoutOk || !payout) {
+      alert("Vui lòng nhập hoặc kết nối địa chỉ ví Base hợp lệ trước khi Claim.")
+      return
+    }
+    if (balance <= 0) {
+      alert("Số dư token của bạn đang bằng 0, hãy hoàn thành ít nhất 1 phiên đào!")
+      return
+    }
+
+    try {
+      const hash = await executeClaimOnBase({
+        userAddress: payout as `0x${string}`,
+        amount: balance,
+        isTestnet: false,
+        onStatusChange: (status, msg) => {
+          setClaimStatus(status)
+          if (msg) setStatusMsg(msg)
+        },
+      })
+      if (hash) {
+        setTxHash(hash)
+      }
+    } catch {
+      // lỗi đã được set trong onStatusChange
+    }
+  }
+
   return (
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
       <h2 className="text-lg font-semibold text-white">$TOKENCAST trên Base</h2>
       <p className="mt-2 text-sm text-gray-400">
         Proof of Cast. Không đào bằng máy. Mỗi người một phiên, thưởng khóa lúc cast, và không có đúc thêm.
       </p>
-      <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-gray-800 bg-gray-800">
+
+      {/* Web3 On-Chain Claim Box */}
+      <div className="mt-5 rounded-2xl border border-[#8a63d2]/40 bg-[#8a63d2]/10 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Wallet className="size-5 text-[#a78bfa]" />
+            <span className="font-semibold text-white">Rút Token On-Chain (Base)</span>
+          </div>
+          <span className="rounded-lg bg-green-500/20 px-2 py-0.5 text-xs font-semibold text-green-400">
+            Phí gas rẻ (~$0.002)
+          </span>
+        </div>
+
+        <p className="mt-2 text-sm text-gray-300">
+          Số dư khả dụng: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
+        </p>
+
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <input
+            value={payout}
+            onChange={(event) => onPayout(event.target.value)}
+            placeholder="Địa chỉ ví Base (0x...)"
+            spellCheck={false}
+            autoCapitalize="none"
+            className="h-11 flex-1 rounded-xl border border-gray-700 bg-[#0b0f17] px-3 font-mono text-sm text-white outline-none placeholder:text-gray-500"
+          />
+          <button
+            type="button"
+            onClick={handleConnectWallet}
+            className="flex h-11 items-center justify-center gap-2 rounded-xl border border-gray-700 bg-[#0b0f17] px-3 text-sm font-semibold text-gray-200 transition hover:bg-gray-800"
+          >
+            <Wallet className="size-4" />
+            Nối ví
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleClaim}
+          disabled={claimStatus === "requesting_voucher" || claimStatus === "sending_tx"}
+          className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#8a63d2] text-sm font-semibold text-white transition hover:bg-[#7c52c8] disabled:opacity-50"
+        >
+          {claimStatus === "requesting_voucher" || claimStatus === "sending_tx" ? (
+            <>
+              <Loader2 className="size-4 animate-spin" />
+              Đang xử lý giao dịch Base...
+            </>
+          ) : (
+            <>⚡ Claim về ví Base (User trả gas)</>
+          )}
+        </button>
+
+        {statusMsg ? (
+          <p className={`mt-2 text-xs ${claimStatus === "error" ? "text-red-400" : claimStatus === "success" ? "text-green-400" : "text-[#a78bfa]"}`}>
+            {statusMsg}
+          </p>
+        ) : null}
+
+        {txHash ? (
+          <a
+            href={`https://basescan.org/tx/${txHash}`}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 flex items-center gap-1 text-xs text-[#a78bfa] underline hover:text-white"
+          >
+            Xem giao dịch trên Basescan <ExternalLink className="size-3" />
+          </a>
+        ) : null}
+      </div>
+
+      <dl className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-gray-800 bg-gray-800">
         {facts.map(([label, value]) => (
           <div key={label} className="bg-[#141b26] px-3 py-3">
             <dt className="text-sm text-gray-400">{label}</dt>
@@ -804,26 +925,6 @@ function TokenPanel({
         Era 0 trả {formatTokens(INITIAL_SESSION_REWARD)} {TOKEN_SYMBOL} cho 8 giờ, tức {formatTokens(INITIAL_SESSION_REWARD / 8)} token mỗi giờ.
         Khi cung chạm 10.5 tỷ (50%), thưởng còn một nửa. Mốc sau là 75%, rồi 87.5%, giống Bitcoin.
         Tổng các era cộng lại khít 21 tỷ.
-      </p>
-      <p className="mt-2 text-sm text-gray-400">
-        Hợp đồng chưa nằm trên Base. Thông số trên là bản khóa để phát hành. Sổ trong app này là số dư phiên của bạn,
-        chưa phải token trong ví.
-      </p>
-
-      <label className="mt-5 block">
-        <span className="text-sm text-gray-400">Địa chỉ nhận trên Base, khi claim mở</span>
-        <input
-          value={payout}
-          onChange={(event) => onPayout(event.target.value)}
-          placeholder="0x…"
-          spellCheck={false}
-          autoCapitalize="none"
-          aria-label="Địa chỉ ví Base"
-          className="mt-1 h-12 w-full rounded-xl border border-gray-700 bg-[#0b0f17] px-3 font-sans text-base text-white outline-none placeholder:text-gray-500"
-        />
-      </label>
-      <p className="mt-2 text-sm text-gray-400">
-        {payout.length === 0 ? "Để trống cũng đào được." : payoutOk ? "Địa chỉ hợp lệ. Chỉ lưu trên máy bạn." : "Cần đúng 42 ký tự, bắt đầu bằng 0x."}
       </p>
 
       <button
