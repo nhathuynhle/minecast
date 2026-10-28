@@ -1,0 +1,18 @@
+{
+  "accountAssociation": {
+    "header": "eyJmaWQiOjEyMzQ1NiwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAifQ",
+    "payload": "eyJkb21haW4iOiJtaW5lY2FzdC52ZXJjZWwuYXBwIn0",
+    "signature": "MHhkZW1vc2lnbmF0dXJlMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDFi"
+  },
+  "frame": {
+    "version": "1",
+    "name": "MineCast",
+    "iconUrl": "https://minecast.vercel.app/icon.png",
+    "homeUrl": "https://minecast.vercel.app",
+    "imageUrl": "https://minecast.vercel.app/og-image.png",
+    "buttonTitle": "⛏️ Đào $TOKENCAST",
+    "splashImageUrl": "https://minecast.vercel.app/splash.png",
+    "splashBackgroundColor": "#0b0f17",
+    "webhookUrl": "https://minecast.vercel.app/api/webhook"
+  }
+}
