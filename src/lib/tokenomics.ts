@@ -12,9 +12,9 @@ export const DECIMALS    = 18
 
 // ── Core tokenomics ───────────────────────────────────────────────────────
 
-export const MAX_SUPPLY             = 21_000_000_000  // 21 tỷ
-export const SESSION_MS             = 8 * 60 * 60 * 1000 // 8 giờ
-export const INITIAL_SESSION_REWARD = 8_000           // 8 000 token / phiên era 0 (1 000 / giờ)
+export const MAX_SUPPLY             = 21_000_000_000  // 21 Billion
+export const SESSION_MS             = 8 * 60 * 60 * 1000 // 8 hours
+export const INITIAL_SESSION_REWARD = 8_000           // 8,000 tokens / session at Era 0 (1,000/hr)
 export const MAX_ERA                = 32
 export const GENESIS_MS             = Date.UTC(2026, 3, 22, 0, 0, 0)
 
@@ -28,9 +28,9 @@ const DAY_MS = 86_400_000
 
 // ── Invite system ─────────────────────────────────────────────────────────
 
-export const INVITE_SPEED_BOOST  = 0.20  // +20% cho người được mời
-export const INVITE_REFERRAL_PCT = 0.08  // 8% hoa hồng cho người mời
-export const MAX_INVITE_FRIENDS  = 20    // Tối đa 20 bạn
+export const INVITE_SPEED_BOOST  = 0.20  // +20% for invited miners
+export const INVITE_REFERRAL_PCT = 0.08  // 8% referral commission for inviter
+export const MAX_INVITE_FRIENDS  = 20    // Up to 20 friends
 
 export function inviterSpeedBonus(friendCount: number): number {
   const n = Math.max(0, Math.floor(friendCount))
@@ -210,10 +210,10 @@ export function formatSupply(n: number): string {
   if (!Number.isFinite(n)) return "0"
   const abs = Math.abs(n)
   if (abs >= 1_000_000_000) {
-    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n / 1_000_000_000)} tỷ`
+    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n / 1_000_000_000)}B`
   }
   if (abs >= 1_000_000) {
-    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n / 1_000_000)} triệu`
+    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n / 1_000_000)}M`
   }
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n)
 }
@@ -232,13 +232,13 @@ export function formatClock(ms: number): string {
 
 export function formatAgo(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 60) return "vừa xong"
+  if (s < 60) return "just now"
   const m = Math.round(s / 60)
-  if (m < 60) return `${m} phút trước`
+  if (m < 60) return `${m}m ago`
   const h = Math.round(m / 60)
-  if (h < 48) return `${h} giờ trước`
+  if (h < 48) return `${h}h ago`
   const d = Math.round(h / 24)
-  return `${d} ngày trước`
+  return `${d}d ago`
 }
 
 export function formatMult(n: number): string {
@@ -246,11 +246,10 @@ export function formatMult(n: number): string {
 }
 
 export function formatWhen(ms: number): string {
-  return new Intl.DateTimeFormat("vi-VN", {
-    day: "2-digit",
-    month: "2-digit",
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
     year: "numeric",
-    timeZone: "Asia/Ho_Chi_Minh",
   }).format(new Date(ms))
 }
 
@@ -271,7 +270,7 @@ export function generateInviteCode(handle: string): string {
   return code
 }
 
-export function inviteUrl(handle: string, baseUrl: string = "https://minecast.vercel.app"): string {
+export function inviteUrl(handle: string, baseUrl: string = "https://minecast-beta.vercel.app"): string {
   const code = generateInviteCode(handle)
   if (!code) return baseUrl
   return `${baseUrl}?ref=${handle}&code=${code}`
