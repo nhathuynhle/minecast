@@ -1,5 +1,6 @@
 import { privateKeyToAccount } from "viem/accounts";
-import { parseEther } from "viem";
+import { createPublicClient, http, isAddress, parseEther, zeroAddress } from "viem";
+import { base, baseSepolia } from "viem/chains";
 
 // Types cho Vercel Edge/Serverless function
 export const config = {
@@ -16,16 +17,66 @@ export default async function handler(request: Request) {
 
   try {
     const body = await request.json();
-    const { userAddress, amount, nonce, chainId = 8453, contractAddress } = body;
+    const { userAddress, nonce, chainId = 8453 } = body;
 
-    if (!userAddress || !amount || nonce === undefined) {
+    if (!isAddress(userAddress) || nonce === undefined) {
       return new Response(JSON.stringify({ error: "Missing required parameters" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    // Lấy Signer Private Key từ biến môi trường Vercel (được bảo mật 100%)
+    const contractAddress = process.env.TOKENCAST_CONTRACT_ADDRESS as `0x${string}`;
+    const configuredChainId = Number(process.env.TOKENCAST_CHAIN_ID ?? 8453);
+    const ledgerUrl = process.env.CLAIM_LEDGER_URL;
+    if (
+      (configuredChainId !== base.id && configuredChainId !== baseSepolia.id) ||
+      !isAddress(contractAddress) ||
+      contractAddress === zeroAddress ||
+      Number(chainId) !== configuredChainId
+    ) {
+      return new Response(JSON.stringify({ error: "Claim contract is not configured for this network." }), { status: 503, headers: { "Content-Type": "application/json" } });
+    }
+    if (!ledgerUrl) {
+      return new Response(JSON.stringify({ error: "Claim ledger is not configured. Local mining balances cannot be claimed on-chain." }), { status: 503, headers: { "Content-Type": "application/json" } });
+    }
+
+    const chain = configuredChainId === baseSepolia.id ? baseSepolia : base;
+    const publicClient = createPublicClient({
+      chain,
+      transport: http(process.env.BASE_RPC_URL),
+    });
+    const onchainNonce = await publicClient.readContract({
+      address: contractAddress,
+      abi: [{
+        type: "function",
+        name: "userNonces",
+        inputs: [{ name: "", type: "address" }],
+        outputs: [{ name: "", type: "uint256" }],
+        stateMutability: "view",
+      }] as const,
+      functionName: "userNonces",
+      args: [userAddress],
+    });
+    if (onchainNonce !== BigInt(nonce)) {
+      return new Response(JSON.stringify({ error: "Claim nonce is stale. Refresh and try again." }), { status: 409, headers: { "Content-Type": "application/json" } });
+    }
+
+    // The ledger, not the browser, decides how many tokens may be claimed.
+    const ledgerResponse = await fetch(ledgerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(process.env.CLAIM_LEDGER_SECRET ? { Authorization: `Bearer ${process.env.CLAIM_LEDGER_SECRET}` } : {}),
+      },
+      body: JSON.stringify({ userAddress, nonce: String(onchainNonce), chainId: configuredChainId }),
+    });
+    const allocation = await ledgerResponse.json();
+    if (!ledgerResponse.ok || !allocation.amount || String(allocation.nonce) !== String(nonce)) {
+      return new Response(JSON.stringify({ error: allocation.error || "No verified claim allocation is available." }), { status: 403, headers: { "Content-Type": "application/json" } });
+    }
+
+    // Lấy Signer Private Key từ biến môi trường Vercel
     const serverPrivateKey = process.env.SIGNER_PRIVATE_KEY as `0x${string}`;
     if (!serverPrivateKey) {
       // Mock signature cho môi trường dev/chưa cấu hình env
@@ -40,15 +91,15 @@ export default async function handler(request: Request) {
 
     const account = privateKeyToAccount(serverPrivateKey);
 
-    const amountWei = parseEther(String(amount));
+    const amountWei = parseEther(String(allocation.amount));
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 1800); // Hết hạn sau 30 phút
 
     // Cấu trúc EIP-712 chuẩn khớp 100% với TokenCast.sol
     const domain = {
       name: "TokenCast",
       version: "1",
-      chainId: Number(chainId),
-      verifyingContract: contractAddress as `0x${string}`,
+      chainId: configuredChainId,
+      verifyingContract: contractAddress,
     };
 
     const types = {

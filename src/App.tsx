@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
-import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2 } from "lucide-react"
+import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
 import { bootFarcaster, composeOnFarcaster } from "@/lib/farcaster"
 import {
   accrued,
@@ -18,7 +18,6 @@ import {
 import {
   activeMiners,
   APP_NAME,
-  CHAIN_ID,
   formatAgo,
   formatBalance,
   formatClock,
@@ -50,6 +49,8 @@ import {
   TOKEN_SYMBOL,
 } from "@/lib/tokenomics"
 import { executeClaimOnBase, type ClaimStatus } from "@/lib/web3-claim"
+import { TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "@/lib/contract"
+import { basescanUrl, readOnchainSnapshot, type OnchainSnapshot } from "@/lib/onchain"
 
 type Tab = "mine" | "invite" | "network" | "token"
 
@@ -680,7 +681,7 @@ function NetworkPanel({
         <div>
           <h2 className="text-lg font-semibold text-white">Network State</h2>
           <p className="mt-1 text-sm text-gray-400">
-            {SIM_MINERS} simulated miners pacing the halving curve. Local ledger stores your balance.
+            This is a client-side mining simulation. Only contract reads below represent Base state.
           </p>
         </div>
         <p className="shrink-0 text-right">
@@ -779,16 +780,19 @@ function TokenPanel({
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>("idle")
   const [statusMsg, setStatusMsg] = useState("")
   const [txHash, setTxHash] = useState("")
+  const [onchain, setOnchain] = useState<OnchainSnapshot | null>(null)
+  const [onchainError, setOnchainError] = useState("")
+  const [loadingOnchain, setLoadingOnchain] = useState(false)
 
   const payoutOk = validPayout(payout)
   const facts = [
     ["Symbol", TOKEN_SYMBOL],
-    ["Network", `Base · ${CHAIN_ID}`],
+    ["Network", `Base · ${TOKENCAST_CHAIN_ID}`],
     ["Standard", "ERC-20"],
     ["Decimals", "18"],
     ["Max Supply", "21 Billion"],
     ["Session", "8 Hours"],
-    ["Current Era", String(era)],
+    ["Current Era", onchain ? String(onchain.era) : `${era} (simulation)`],
     ["Base Reward", `${formatTokens(reward)} / session`],
   ]
 
@@ -807,21 +811,31 @@ function TokenPanel({
     }
   }
 
+  async function refreshOnchain() {
+    if (!TOKENCAST_IS_DEPLOYED) return
+    setLoadingOnchain(true)
+    setOnchainError("")
+    try {
+      setOnchain(await readOnchainSnapshot(payoutOk && payout ? payout as `0x${string}` : undefined))
+    } catch (error: any) {
+      setOnchainError(error.message || "Could not read Base contract state.")
+    } finally {
+      setLoadingOnchain(false)
+    }
+  }
+
+  useEffect(() => {
+    void refreshOnchain()
+  }, [payout])
+
   async function handleClaim() {
     if (!payoutOk || !payout) {
       alert("Please connect or enter a valid Base wallet address first.")
       return
     }
-    if (balance <= 0) {
-      alert("Your claimable balance is 0. Mine at least one session first!")
-      return
-    }
-
     try {
       const hash = await executeClaimOnBase({
         userAddress: payout as `0x${string}`,
-        amount: balance,
-        isTestnet: false,
         onStatusChange: (status, msg) => {
           setClaimStatus(status)
           if (msg) setStatusMsg(msg)
@@ -829,6 +843,7 @@ function TokenPanel({
       })
       if (hash) {
         setTxHash(hash)
+        void refreshOnchain()
       }
     } catch {
       // Handled in status callback
@@ -841,6 +856,37 @@ function TokenPanel({
       <p className="mt-2 text-sm text-gray-400">
         Proof of Cast on Base. No hardware rigs. One miner, one session, locked reward, zero pre-mine.
       </p>
+
+      <div className={`mt-5 rounded-xl border p-4 ${TOKENCAST_IS_DEPLOYED ? "border-green-500/30 bg-green-500/10" : "border-amber-500/30 bg-amber-500/10"}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <ShieldCheck className={`size-5 shrink-0 ${TOKENCAST_IS_DEPLOYED ? "text-green-400" : "text-amber-400"}`} />
+            <div>
+              <p className="font-semibold text-white">{TOKENCAST_IS_DEPLOYED ? "Base contract connected" : "Onchain claims not live"}</p>
+              <p className="mt-0.5 text-sm text-gray-300">
+                {TOKENCAST_IS_DEPLOYED
+                  ? `Reading TokenCast directly from Base (${TOKENCAST_CHAIN_ID}).`
+                  : "Mining balances in this preview are local only and cannot be withdrawn yet."}
+              </p>
+            </div>
+          </div>
+          {TOKENCAST_IS_DEPLOYED ? (
+            <button type="button" onClick={() => void refreshOnchain()} title="Refresh Base contract state" className="grid size-9 shrink-0 place-items-center rounded-lg border border-green-400/30 text-green-300 hover:bg-green-500/10" aria-label="Refresh Base contract state">
+              <RefreshCw className={`size-4 ${loadingOnchain ? "animate-spin" : ""}`} />
+            </button>
+          ) : null}
+        </div>
+        {TOKENCAST_IS_DEPLOYED ? (
+          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+            <a href={basescanUrl(`/address/${TOKENCAST_CONTRACT_ADDRESS}`)} target="_blank" rel="noreferrer" className="truncate text-green-300 underline hover:text-white">
+              {TOKENCAST_CONTRACT_ADDRESS.slice(0, 6)}...{TOKENCAST_CONTRACT_ADDRESS.slice(-4)} <ExternalLink className="inline size-3" />
+            </a>
+            <span className="text-right text-gray-300">Minted: {onchain ? formatSupply(onchain.mintedSupply) : "..."}</span>
+            {payoutOk && payout && onchain?.walletBalance !== null ? <span className="col-span-2 text-gray-300">Wallet balance: {formatTokens(onchain.walletBalance)} {TOKEN_SYMBOL}</span> : null}
+          </div>
+        ) : null}
+        {onchainError ? <p className="mt-2 text-xs text-red-300">{onchainError}</p> : null}
+      </div>
 
       {/* Web3 On-Chain Claim Box */}
       <div className="mt-5 rounded-2xl border border-[#8a63d2]/40 bg-[#8a63d2]/10 p-4">
@@ -855,8 +901,9 @@ function TokenPanel({
         </div>
 
         <p className="mt-2 text-sm text-gray-300">
-          Claimable Balance: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
+          Local mining balance: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
         </p>
+        <p className="mt-1 text-xs text-gray-400">A server-verified claim ledger determines the withdrawable amount; the browser never chooses it.</p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <input
@@ -880,7 +927,7 @@ function TokenPanel({
         <button
           type="button"
           onClick={handleClaim}
-          disabled={claimStatus === "requesting_voucher" || claimStatus === "sending_tx"}
+          disabled={!TOKENCAST_IS_DEPLOYED || claimStatus === "requesting_voucher" || claimStatus === "sending_tx"}
           className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#8a63d2] text-sm font-semibold text-white transition hover:bg-[#7c52c8] disabled:opacity-50"
         >
           {claimStatus === "requesting_voucher" || claimStatus === "sending_tx" ? (
@@ -889,7 +936,7 @@ function TokenPanel({
               Processing transaction on Base...
             </>
           ) : (
-            <>⚡ Claim $TOKENCAST</>
+            <>{TOKENCAST_IS_DEPLOYED ? "Claim verified allocation" : "Claims coming after deployment"}</>
           )}
         </button>
 
@@ -901,7 +948,7 @@ function TokenPanel({
 
         {txHash ? (
           <a
-            href={`https://basescan.org/tx/${txHash}`}
+            href={basescanUrl(`/tx/${txHash}`)}
             target="_blank"
             rel="noreferrer"
             className="mt-2 flex items-center gap-1 text-xs text-[#a78bfa] underline hover:text-white"

@@ -1,5 +1,15 @@
-// Base Mainnet (8453) hoặc Base Sepolia (84532)
-export const TOKENCAST_CONTRACT_ADDRESS = "0x0000000000000000000000000000000000000000" as `0x${string}`; // Sẽ thay bằng địa chỉ contract sau khi deploy
+import { isAddress, zeroAddress } from "viem"
+
+// These values deliberately come from the deployment environment. Never ship a
+// placeholder address as if it were a live token contract.
+const configuredAddress = import.meta.env.VITE_TOKENCAST_CONTRACT_ADDRESS
+export const TOKENCAST_CONTRACT_ADDRESS = (
+  configuredAddress && isAddress(configuredAddress) ? configuredAddress : zeroAddress
+) as `0x${string}`
+
+const requestedChainId = Number(import.meta.env.VITE_TOKENCAST_CHAIN_ID ?? 8453)
+export const TOKENCAST_CHAIN_ID = requestedChainId === 84532 ? 84532 : 8453
+export const TOKENCAST_IS_DEPLOYED = TOKENCAST_CONTRACT_ADDRESS !== zeroAddress
 
 export const TOKENCAST_ABI = [
   {
@@ -14,6 +24,13 @@ export const TOKENCAST_ABI = [
     ],
     outputs: [],
     stateMutability: "nonpayable"
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view"
   },
   {
     type: "function",

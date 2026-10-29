@@ -13,10 +13,8 @@
   - **Invited Miners**: Automatically enjoy a permanent **+20%** mining speed multiplier.
   - **Inviters**: Earn an **8% referral bonus** on every session completed by squad members (up to 20 friends).
   - **Squad Milestones**: Boost personal mining speed (+10% for 3 friends, +20% for 7 friends, +30% for 15+ friends).
-- **On-Chain Security & Claiming**:
-  - Direct user claiming to any Base wallet via cryptographic **EIP-712 Vouchers**.
-  - Nonce & 30-minute timestamp deadline protection to prevent replay attacks.
-  - Users pay standard low Base network gas (~$0.002).
+- **On-chain read layer**: once a contract address is configured, the app reads minted supply, current era, wallet balance, and the claim nonce directly from Base.
+- **Safe voucher claims**: the browser never provides an amount. The Vercel signer verifies the on-chain nonce, then gets the allocated amount from a trusted claim ledger before signing its EIP-712 voucher.
 
 ---
 
@@ -26,3 +24,15 @@
 - **Web3 Engine**: `viem` for fast, lightweight RPC communication on Base (Chain ID: 8453).
 - **Farcaster Integration**: `@farcaster/miniapp-sdk` for Frame v2 composer interactions.
 - **Smart Contract**: Solidity 0.8.24 ERC-20 (`contracts/TokenCast.sol`) with ECDSA signature verification.
+
+## On-chain launch checklist
+
+The mining UI can be previewed without a contract, but its browser `localStorage` balance is intentionally **not withdrawable**. Before enabling real claims:
+
+1. Deploy `TokenCast.sol` on Base or Base Sepolia with the voucher signer address.
+2. Copy `.env.example` to `.env.local` for local development, and set the same public contract address/network in Vercel.
+3. Set `TOKENCAST_CONTRACT_ADDRESS`, `TOKENCAST_CHAIN_ID`, and `SIGNER_PRIVATE_KEY` only as Vercel server variables. Never expose the signer with a `VITE_` prefix.
+4. Build `CLAIM_LEDGER_URL` as an authenticated internal service. It must verify the Farcaster identity and cast/session rules server-side, store every allocation, and return only `{ amount, nonce }` for an unclaimed allocation.
+5. Protect the ledger against duplicate settlement and referrals; `localStorage`, a browser-submitted amount, and a handle typed into the UI are never proofs of eligibility.
+
+Until all values are configured, the app displays “Onchain claims not live” and disables the claim button instead of producing a misleading transaction.
