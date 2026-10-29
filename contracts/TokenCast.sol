@@ -59,8 +59,9 @@ abstract contract ERC20Base {
 }
 
 contract TokenCast is ERC20Base {
-    uint256 public constant MAX_SUPPLY = 21_000_000_000 * 1e18; // 21 Tỷ
-    uint256 public constant BASE_SESSION_REWARD = 8_000 * 1e18; // Era 0: 8 000 TOKENCAST
+    uint256 public constant MAX_SUPPLY = 21_000_000_000 * 1e18;
+    uint256 public constant BASE_SESSION_REWARD = 8_000 * 1e18;
+    uint256 public constant MAX_ERA = 32;
 
     address public owner;
     address public signServer;
@@ -142,16 +143,32 @@ contract TokenCast is ERC20Base {
     }
 
     function currentEra() public view returns (uint256) {
-        if (mintedSupply == 0) return 0;
-        uint256 remaining = MAX_SUPPLY - mintedSupply;
-        if (remaining == 0) return 32;
-        uint256 era = 0;
-        uint256 threshold = MAX_SUPPLY;
-        while (era < 32 && remaining < threshold / 2) {
-            threshold /= 2;
-            era++;
+        uint256 era;
+        while (era < MAX_ERA && mintedSupply >= supplyAtEraStart(era + 1)) {
+            unchecked {
+                era++;
+            }
         }
         return era;
+    }
+
+    /// @notice Reward before off-chain eligibility multipliers for an era.
+    /// @dev Follower, referral, and cast verification are intentionally handled
+    ///      by the signed voucher service, where Farcaster state can be verified.
+    function rewardForEra(uint256 era) public pure returns (uint256) {
+        if (era >= MAX_ERA) return 0;
+        return BASE_SESSION_REWARD / (1 << era);
+    }
+
+    /// @notice Cumulative supply at which an era begins: 50%, 75%, 87.5%, etc.
+    function supplyAtEraStart(uint256 era) public pure returns (uint256) {
+        if (era == 0) return 0;
+        if (era >= MAX_ERA) return MAX_SUPPLY;
+        return MAX_SUPPLY - (MAX_SUPPLY / (1 << era));
+    }
+
+    function remainingSupply() external view returns (uint256) {
+        return MAX_SUPPLY - mintedSupply;
     }
 
     function setSignServer(address newServer) external onlyOwner {

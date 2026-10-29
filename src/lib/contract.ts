@@ -27,6 +27,13 @@ export const TOKENCAST_ABI = [
   },
   {
     type: "function",
+    name: "remainingSupply",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
     name: "totalSupply",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],

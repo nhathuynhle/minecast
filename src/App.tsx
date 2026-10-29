@@ -882,7 +882,7 @@ function TokenPanel({
               {TOKENCAST_CONTRACT_ADDRESS.slice(0, 6)}...{TOKENCAST_CONTRACT_ADDRESS.slice(-4)} <ExternalLink className="inline size-3" />
             </a>
             <span className="text-right text-gray-300">Minted: {onchain ? formatSupply(onchain.mintedSupply) : "..."}</span>
-            {payoutOk && payout && onchain?.walletBalance !== null ? <span className="col-span-2 text-gray-300">Wallet balance: {formatTokens(onchain.walletBalance)} {TOKEN_SYMBOL}</span> : null}
+            {payoutOk && payout && onchain?.walletBalance !== null ? <span className="col-span-2 text-gray-300">Wallet balance: {formatTokens(onchain?.walletBalance ?? 0)} {TOKEN_SYMBOL}</span> : null}
           </div>
         ) : null}
         {onchainError ? <p className="mt-2 text-xs text-red-300">{onchainError}</p> : null}
