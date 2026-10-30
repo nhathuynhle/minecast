@@ -288,15 +288,7 @@ function halvingRatio(mined: number): number {
 
 function Mark() {
   return (
-    <span className="grid size-11 place-items-center rounded-xl bg-[#8a63d2] text-white">
-      <svg viewBox="0 0 24 24" className="size-6" aria-hidden>
-        <path
-          fill="currentColor"
-          d="M12 2.2 20.2 7v10L12 21.8 3.8 17V7L12 2.2Zm0 2.6L6.2 8.1v7.8L12 19.2l5.8-3.3V8.1L12 4.8Z"
-        />
-        <circle cx="12" cy="12" r="2.1" fill="currentColor" />
-      </svg>
-    </span>
+    <img src="/tokencast-logo.png" alt="MineCast" width={44} height={44} className="size-11 shrink-0 rounded-lg object-cover" />
   )
 }
 
@@ -852,7 +844,7 @@ function TokenPanel({
 
   return (
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
-      <h2 className="text-lg font-semibold text-white">$TOKENCAST on Base</h2>
+      <h2 className="flex items-center gap-3 text-lg font-semibold text-white"><img src="/tokencast-logo.png" alt="" width={36} height={36} className="size-9 shrink-0 rounded-lg" />$TOKENCAST on Base</h2>
       <p className="mt-2 text-sm text-gray-400">
         Proof of Cast on Base. No hardware rigs. One miner, one session, locked reward, zero pre-mine.
       </p>
