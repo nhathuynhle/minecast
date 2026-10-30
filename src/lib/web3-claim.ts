@@ -2,6 +2,7 @@ import { createWalletClient, custom, getAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import { TOKENCAST_ABI, TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "./contract";
 import { readClaimNonce } from "./onchain";
+import { farcasterAuthToken } from "./farcaster";
 
 export type ClaimStatus = "idle" | "requesting_voucher" | "sending_tx" | "success" | "error";
 
@@ -39,7 +40,7 @@ export async function executeClaimOnBase({
     // 1. Gọi Server API để lấy voucher có chữ ký hợp lệ
     const response = await fetch("/api/claim", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${await farcasterAuthToken()}` },
       body: JSON.stringify({
         userAddress: account,
         nonce: nonce.toString(),

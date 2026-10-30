@@ -1,6 +1,7 @@
 import { privateKeyToAccount } from "viem/accounts";
-import { createPublicClient, http, isAddress, parseEther, zeroAddress } from "viem";
+import { createPublicClient, http, isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
+import { requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend";
 
 // Types cho Vercel Edge/Serverless function
 export const config = {
@@ -16,6 +17,7 @@ export default async function handler(request: Request) {
   }
 
   try {
+    const fid = await requireFarcasterUser(request);
     const body = await request.json();
     const { userAddress, nonce, chainId = 8453 } = body;
 
@@ -28,7 +30,6 @@ export default async function handler(request: Request) {
 
     const contractAddress = process.env.TOKENCAST_CONTRACT_ADDRESS as `0x${string}`;
     const configuredChainId = Number(process.env.TOKENCAST_CHAIN_ID ?? 8453);
-    const ledgerUrl = process.env.CLAIM_LEDGER_URL;
     if (
       (configuredChainId !== base.id && configuredChainId !== baseSepolia.id) ||
       !isAddress(contractAddress) ||
@@ -36,9 +37,6 @@ export default async function handler(request: Request) {
       Number(chainId) !== configuredChainId
     ) {
       return new Response(JSON.stringify({ error: "Claim contract is not configured for this network." }), { status: 503, headers: { "Content-Type": "application/json" } });
-    }
-    if (!ledgerUrl) {
-      return new Response(JSON.stringify({ error: "Claim ledger is not configured. Local mining balances cannot be claimed on-chain." }), { status: 503, headers: { "Content-Type": "application/json" } });
     }
 
     const chain = configuredChainId === baseSepolia.id ? baseSepolia : base;
@@ -62,20 +60,6 @@ export default async function handler(request: Request) {
       return new Response(JSON.stringify({ error: "Claim nonce is stale. Refresh and try again." }), { status: 409, headers: { "Content-Type": "application/json" } });
     }
 
-    // The ledger, not the browser, decides how many tokens may be claimed.
-    const ledgerResponse = await fetch(ledgerUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(process.env.CLAIM_LEDGER_SECRET ? { Authorization: `Bearer ${process.env.CLAIM_LEDGER_SECRET}` } : {}),
-      },
-      body: JSON.stringify({ userAddress, nonce: String(onchainNonce), chainId: configuredChainId }),
-    });
-    const allocation = await ledgerResponse.json();
-    if (!ledgerResponse.ok || !allocation.amount || String(allocation.nonce) !== String(nonce)) {
-      return new Response(JSON.stringify({ error: allocation.error || "No verified claim allocation is available." }), { status: 403, headers: { "Content-Type": "application/json" } });
-    }
-
     // Lấy Signer Private Key từ biến môi trường Vercel
     const serverPrivateKey = process.env.SIGNER_PRIVATE_KEY as `0x${string}`;
     if (!serverPrivateKey) {
@@ -89,9 +73,10 @@ export default async function handler(request: Request) {
       );
     }
 
+    const amountWei = BigInt(await reserveClaimAllocation(fid, userAddress, String(onchainNonce)));
+
     const account = privateKeyToAccount(serverPrivateKey);
 
-    const amountWei = parseEther(String(allocation.amount));
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 1800); // Hết hạn sau 30 phút
 
     // Cấu trúc EIP-712 chuẩn khớp 100% với TokenCast.sol

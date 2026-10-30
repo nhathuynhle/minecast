@@ -13,7 +13,7 @@ export const DECIMALS    = 18
 // ── Core tokenomics ───────────────────────────────────────────────────────
 
 export const MAX_SUPPLY             = 21_000_000_000  // 21 Billion
-export const SESSION_MS             = 8 * 60 * 60 * 1000 // 8 hours
+export const SESSION_MS             = 24 * 60 * 60 * 1000 // 24 hours
 export const INITIAL_SESSION_REWARD = 8_000           // 8,000 tokens / session at Era 0 (1,000/hr)
 export const MAX_ERA                = 32
 export const GENESIS_MS             = Date.UTC(2026, 3, 22, 0, 0, 0)
@@ -281,8 +281,8 @@ Chain: Base (chainId 8453)
 Standard: ERC-20, 18 decimals
 Max supply: 21,000,000,000 (21 billion), hard cap, no extra mint
 Issuance: Proof of Cast
-Session: 8 hours after each cast. Cast again when it ends.
-Base reward: 8,000 TOKENCAST per session at Era 0 (1,000 per hour)
+Session: 24 hours after each cast. Cast again when it ends.
+Base reward: 8,000 TOKENCAST per session at Era 0 (333.33 per hour)
 Halving: reward halves when mined supply hits 50%, then 75%, then 87.5%, and so on
 Followers: higher follower count mines faster, capped at 5.25×
 Invite: invited miner gets +20% speed. Inviter earns 8% of each friend's session.

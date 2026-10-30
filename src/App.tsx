@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
-import { bootFarcaster, composeOnFarcaster } from "@/lib/farcaster"
+import { bootFarcaster, composeOnFarcaster, farcasterAuthToken } from "@/lib/farcaster"
 import {
   accrued,
   cleanHandle,
@@ -60,8 +60,8 @@ const STEPS = [
     body: "Post a cast to start a mining session. On Warpcast, it posts directly to your profile.",
   },
   {
-    title: "8-Hour Session",
-    body: "Tokens drip throughout the session. Closes app safely. Drip pauses when timer hits zero.",
+    title: "24-Hour Session",
+    body: "Tokens drip throughout the day. One verified cast starts one daily mining session.",
   },
   {
     title: "Halving Schedule",
@@ -104,7 +104,13 @@ export default function App() {
       const t = Date.now()
       setNow(t)
       setMiner((current) => {
+        const completed = Boolean(current.session && t >= current.session.endsAt)
         const next = settle(current, t)
+        if (completed) {
+          void farcasterAuthToken()
+            .then((token) => fetch("/api/mine/settle", { method: "POST", headers: { Authorization: `Bearer ${token}` } }))
+            .catch(() => undefined)
+        }
         return next === current ? current : next
       })
     }
@@ -113,6 +119,9 @@ export default function App() {
     bootFarcaster().then((username) => {
       if (!username) return
       setMiner((current) => (current.handle ? current : { ...current, handle: cleanHandle(username) }))
+      void farcasterAuthToken()
+        .then((token) => fetch("/api/mine/settle", { method: "POST", headers: { Authorization: `Bearer ${token}` } }))
+        .catch(() => undefined)
     })
     return () => window.clearInterval(id)
   }, [])
@@ -149,7 +158,7 @@ export default function App() {
             <Mark />
             <div>
               <h1 className="text-lg font-bold tracking-tight text-white">{APP_NAME}</h1>
-              <p className="text-sm text-gray-400">Cast once. Mine for 8 hours.</p>
+              <p className="text-sm text-gray-400">Cast once. Mine for 24 hours.</p>
             </div>
           </div>
           <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">
@@ -254,19 +263,42 @@ export default function App() {
               return false
             }
             const posted = await composeOnFarcaster(text)
-            if (posted === "cancelled") {
+            if (posted.status !== "posted" || !posted.hash) {
               setNotice("Composer was closed before posting. Session not started.")
+              return false
+            }
+            const wallet = minerRef.current.payout
+            if (!validPayout(wallet) || !wallet) {
+              setNotice("Connect your Base wallet before starting a mining session.")
+              return false
+            }
+            const serverResponse = await fetch("/api/mine/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${await farcasterAuthToken()}` },
+              body: JSON.stringify({ castHash: posted.hash, walletAddress: wallet, username: handle, referrerHandle: current.invitedBy }),
+            })
+            if (!serverResponse.ok) {
+              const data = await serverResponse.json().catch(() => ({}))
+              setNotice(data.error || "The server could not verify this cast.")
+              return false
+            }
+            const verified = await serverResponse.json()
+            const verifiedReward = Number(BigInt(verified.rewardWei) / 10n ** 18n)
+            const verifiedEndsAt = Date.parse(verified.endsAt)
+            const verifiedEra = Number(verified.era)
+            if (!Number.isFinite(verifiedReward) || verifiedReward <= 0 || !Number.isFinite(verifiedEndsAt) || !Number.isInteger(verifiedEra) || verifiedEra < 0) {
+              setNotice("The server returned an invalid mining session.")
               return false
             }
             const t = Date.now()
             const settled = settle({ ...minerRef.current, handle }, t)
             const mined = Math.min(MAX_SUPPLY, simulatedMined(t) + settled.balance)
-            const next = openSession(settled, t, text, handle, mined)
+            const next = openSession(settled, t, text, handle, mined, verifiedReward, verifiedEra)
             if (!next) {
               setNotice("Max supply reached. No more tokens available to mine.")
               return false
             }
-            setMiner(next)
+            setMiner({ ...next, session: next.session ? { ...next.session, endsAt: verifiedEndsAt } : null })
             setNow(t)
             setTab("mine")
             return true
@@ -466,7 +498,7 @@ function InvitePanel({
           <h2 className="text-lg font-semibold text-white">Invite Squad</h2>
           <p className="mt-1 text-sm text-gray-400">
             Invite friends to mine together. Earn {Math.round(INVITE_REFERRAL_PCT * 100)}% bonus from each of their sessions.
-            Max {MAX_INVITE_FRIENDS} squad members.
+            Their Farcaster account must have at least 100 followers to qualify. Max {MAX_INVITE_FRIENDS} squad members.
           </p>
         </div>
         <span className="shrink-0 rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">
@@ -552,7 +584,7 @@ function InvitePanel({
         <div className="mt-6">
           <h3 className="font-semibold text-white">Who invited you?</h3>
           <p className="mt-1 text-sm text-gray-400">
-            Enter referrer handle to unlock +{Math.round(INVITE_SPEED_BOOST * 100)}% permanent mining speed (one-time setting).
+            Enter a referrer handle. It is verified only when your Farcaster account has at least 100 followers.
           </p>
           <div className="mt-2 flex gap-2">
             <input
@@ -783,7 +815,7 @@ function TokenPanel({
     ["Standard", "ERC-20"],
     ["Decimals", "18"],
     ["Max Supply", "21 Billion"],
-    ["Session", "8 Hours"],
+    ["Session", "24 Hours"],
     ["Current Era", onchain ? String(onchain.era) : `${era} (simulation)`],
     ["Base Reward", `${formatTokens(reward)} / session`],
   ]
@@ -961,7 +993,7 @@ function TokenPanel({
 
       <h3 className="mt-6 font-semibold text-white">Halving Dynamics</h3>
       <p className="mt-2 text-sm text-gray-400">
-        Era 0 yields {formatTokens(INITIAL_SESSION_REWARD)} {TOKEN_SYMBOL} per 8 hours ({formatTokens(INITIAL_SESSION_REWARD / 8)}/hr).
+        Era 0 yields {formatTokens(INITIAL_SESSION_REWARD)} {TOKEN_SYMBOL} per 24 hours ({formatTokens(INITIAL_SESSION_REWARD / 24)}/hr). Claims are limited to one per Farcaster account every 24 hours.
         When total mined supply reaches 10.5 Billion (50%), session rewards cut in half. Subsequent checkpoints at 75%, 87.5%, identical to Bitcoin.
       </p>
 
@@ -1026,7 +1058,7 @@ function Composer({
   const titleId = useId()
   const field = useRef<HTMLTextAreaElement>(null)
   const [text, setText] = useState(
-    `⛏️ Started an 8-hour mining session for $TOKENCAST on MineCast (Era ${era}). Cast to mine!`,
+    `⛏️ Started a 24-hour mining session for $TOKENCAST on MineCast (Era ${era}). Cast to mine!`,
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState("")
@@ -1065,7 +1097,7 @@ function Composer({
           <div>
             <h2 id={titleId} className="text-lg font-semibold">Start Mining Session</h2>
             <p className="mt-1 text-sm text-gray-400">
-              Locks {formatTokens(reward)} {TOKEN_SYMBOL} reward for 8 hours.
+              Locks {formatTokens(reward)} {TOKEN_SYMBOL} reward for 24 hours.
             </p>
           </div>
           <button
@@ -1120,7 +1152,7 @@ function Composer({
             className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#8a63d2] text-base font-semibold text-white transition hover:bg-[#7c52c8] disabled:opacity-50"
           >
             <Send className="size-4" />
-            {busy ? "Posting cast…" : "Post Cast & Mine for 8h"}
+            {busy ? "Posting cast…" : "Post Cast & Mine for 24h"}
           </button>
         </form>
       </div>

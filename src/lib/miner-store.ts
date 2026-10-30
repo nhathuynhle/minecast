@@ -152,6 +152,8 @@ export function openSession(
   text: string,
   handle: string,
   mined: number,
+  verifiedReward?: number,
+  verifiedEra?: number,
 ): MinerState | null {
   if (state.session && now < state.session.endsAt) return null
 
@@ -159,10 +161,11 @@ export function openSession(
   const wasInvited = state.invitedBy.length >= 2
   const friendsInvited = state.invitedFriends.length
 
-  const reward = personalReward(mined, followers, wasInvited, friendsInvited)
+  const reward = verifiedReward ?? personalReward(mined, followers, wasInvited, friendsInvited)
   if (reward <= 0) return null
 
-  const { era } = rewardFor(mined)
+  const { era: calculatedEra } = rewardFor(mined)
+  const era = verifiedEra ?? calculatedEra
   const session: MiningSession = {
     startedAt: now,
     endsAt: now + SESSION_MS,

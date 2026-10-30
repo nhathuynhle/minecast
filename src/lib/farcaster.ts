@@ -5,6 +5,7 @@ type MiniSdk = {
     ready: () => Promise<void>
     composeCast: (opts: { text?: string }) => Promise<{ cast: { hash: string } | null } | undefined>
   }
+  quickAuth?: { getToken: () => Promise<{ token: string }> }
 }
 
 async function loadSdk(): Promise<MiniSdk | null> {
@@ -46,16 +47,22 @@ export async function bootFarcaster(): Promise<string | null> {
 
 export async function composeOnFarcaster(
   text: string,
-): Promise<"posted" | "cancelled" | "unavailable"> {
-  if (typeof window === "undefined") return "unavailable"
+): Promise<{ status: "posted" | "cancelled" | "unavailable"; hash?: string }> {
+  if (typeof window === "undefined") return { status: "unavailable" }
   const sdk = await loadSdk()
-  if (!sdk) return "unavailable"
+  if (!sdk) return { status: "unavailable" }
   const inside = await withTimeout(sdk.isInMiniApp(800), 1200, false)
-  if (!inside) return "unavailable"
+  if (!inside) return { status: "unavailable" }
   try {
     const result = await sdk.actions.composeCast({ text })
-    return result?.cast ? "posted" : "cancelled"
+    return result?.cast ? { status: "posted", hash: result.cast.hash } : { status: "cancelled" }
   } catch {
-    return "cancelled"
+    return { status: "cancelled" }
   }
+}
+
+export async function farcasterAuthToken(): Promise<string> {
+  const sdk = await loadSdk()
+  if (!sdk?.quickAuth) throw new Error("Open MineCast inside Farcaster to authenticate.")
+  return (await sdk.quickAuth.getToken()).token
 }
