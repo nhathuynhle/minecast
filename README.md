@@ -40,4 +40,14 @@ The mining UI can be previewed without a contract, but its browser `localStorage
 5. Configure `FARCASTER_AUTH_AUDIENCE` and `NEYNAR_API_KEY`. The API accepts only a Quick Auth identity, verifies the cast's author via Neynar, enforces one active session per FID, and settles sessions atomically.
 6. Keep `localStorage`, a browser-submitted amount, and a typed handle out of eligibility decisions. They are UI convenience only, never claim proof.
 
+## Farcaster Mini App registration
+
+The app exposes its manifest at `https://minecast-beta.vercel.app/.well-known/farcaster.json`. After deploying, create or open the MineCast Mini App in the Farcaster developer portal and generate the domain association for the exact domain `minecast-beta.vercel.app` (no `https://`, no trailing slash). Copy its three returned values into these Vercel **Production** environment variables, then redeploy:
+
+- `FARCASTER_ASSOCIATION_HEADER`
+- `FARCASTER_ASSOCIATION_PAYLOAD`
+- `FARCASTER_ASSOCIATION_SIGNATURE`
+
+The manifest intentionally returns HTTP 503 until all three values exist, so Farcaster never treats a placeholder association as a real app. If the production domain changes later, regenerate the association for the new exact domain and update both these values and the launch metadata in `index.html`.
+
 Until all values are configured, the app displays “Onchain claims not live” and disables the claim button instead of producing a misleading transaction.
