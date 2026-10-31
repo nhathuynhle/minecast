@@ -1,18 +1,15 @@
 {
   "accountAssociation": {
-    "header": "eyJmaWQiOjEyMzQ1NiwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAifQ",
-    "payload": "eyJkb21haW4iOiJtaW5lY2FzdC52ZXJjZWwuYXBwIn0",
-    "signature": "MHhkZW1vc2lnbmF0dXJlMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDFi"
+    "header": "eyJmaWQiOjMzNTY4OTgsInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHg4MzI4MTYzN0NjMkEyQ2M5ZTFiMTE0NDkwODYwODc1Njk3ZjgwMDNCIn0",
+    "payload": "eyJkb21haW4iOiJtaW5lY2FzdC1iZXRhLnZlcmNlbC5hcHAifQ",
+    "signature": "UdtF8auRw8P2Xi9JMF2KP1GOqQcG1+fnQ6bwdUqNEp4pu2QoTj+Wbhtrc2+DJze+dJlZjew3FpXodd5vo0auvhw="
   },
   "frame": {
     "version": "1",
     "name": "MineCast",
-    "iconUrl": "https://minecast.vercel.app/icon.png",
-    "homeUrl": "https://minecast.vercel.app",
-    "imageUrl": "https://minecast.vercel.app/og-image.png",
-    "buttonTitle": "⛏️ Đào $TOKENCAST",
-    "splashImageUrl": "https://minecast.vercel.app/splash.png",
-    "splashBackgroundColor": "#0b0f17",
-    "webhookUrl": "https://minecast.vercel.app/api/webhook"
+    "iconUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
+    "homeUrl": "https://minecast-beta.vercel.app",
+    "splashImageUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
+    "splashBackgroundColor": "#0b0f17"
   }
 }

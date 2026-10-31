@@ -42,12 +42,8 @@ The mining UI can be previewed without a contract, but its browser `localStorage
 
 ## Farcaster Mini App registration
 
-The app exposes its manifest at `https://minecast-beta.vercel.app/.well-known/farcaster.json`. After deploying, create or open the MineCast Mini App in the Farcaster developer portal and generate the domain association for the exact domain `minecast-beta.vercel.app` (no `https://`, no trailing slash). Copy its three returned values into these Vercel **Production** environment variables, then redeploy:
+The app exposes its manifest at `https://minecast-beta.vercel.app/.well-known/farcaster.json`. The account association is public cryptographic metadata, so it is served as a static JSON file at `public/.well-known/farcaster.json`. Generate it in the Farcaster developer portal for the exact domain `minecast-beta.vercel.app` (no `https://`, no trailing slash), then replace the `header`, `payload`, and `signature` values in that file and redeploy.
 
-- `FARCASTER_ASSOCIATION_HEADER`
-- `FARCASTER_ASSOCIATION_PAYLOAD`
-- `FARCASTER_ASSOCIATION_SIGNATURE`
-
-The manifest intentionally returns HTTP 503 until all three values exist, so Farcaster never treats a placeholder association as a real app. If the production domain changes later, regenerate the association for the new exact domain and update both these values and the launch metadata in `index.html`.
+If the production domain changes later, regenerate the association for the new exact domain and update the manifest plus the launch metadata in `index.html`.
 
 Until all values are configured, the app displays “Onchain claims not live” and disables the claim button instead of producing a misleading transaction.
