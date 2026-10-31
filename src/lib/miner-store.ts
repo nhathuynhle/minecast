@@ -1,4 +1,4 @@
-import { personalReward, SESSION_MS, rewardFor, MAX_INVITE_FRIENDS, INVITE_REFERRAL_PCT } from "@/lib/tokenomics"
+import { SESSION_MS, rewardFor, MAX_INVITE_FRIENDS, INVITE_REFERRAL_PCT } from "@/lib/tokenomics"
 
 const KEY = "minecast.v3"
 
@@ -157,11 +157,10 @@ export function openSession(
 ): MinerState | null {
   if (state.session && now < state.session.endsAt) return null
 
-  const followers = state.followers
-  const wasInvited = state.invitedBy.length >= 2
-  const friendsInvited = state.invitedFriends.length
-
-  const reward = verifiedReward ?? personalReward(mined, followers, wasInvited, friendsInvited)
+  // A real session must use the server calculation. Browser state is display-only
+  // and must never decide a withdrawable reward.
+  if (verifiedReward === undefined) return null
+  const reward = verifiedReward
   if (reward <= 0) return null
 
   const { era: calculatedEra } = rewardFor(mined)

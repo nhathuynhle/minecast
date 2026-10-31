@@ -66,5 +66,47 @@ export const TOKENCAST_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "releasedSupply",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "maxDailyClaimForEra",
+    inputs: [{ name: "era", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "currentEmissionDay",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "dailyEmissionForDay",
+    inputs: [{ name: "day", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "finalizeDailyPool",
+    inputs: [
+      { name: "day", type: "uint256" },
+      { name: "allocated", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "v", type: "uint8" },
+      { name: "r", type: "bytes32" },
+      { name: "s", type: "bytes32" }
+    ],
+    outputs: [],
+    stateMutability: "nonpayable"
   }
 ] as const;

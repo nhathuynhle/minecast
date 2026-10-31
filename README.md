@@ -8,15 +8,17 @@
 
 - **24-Hour Cast Sessions**: Users post a cast on Farcaster to unlock one 24-hour token drip session. Once the timer expires, another verified cast is required.
 - **21 Billion Hard Cap**: Hard-coded ceiling of **21,000,000,000 $TOKENCAST** on Base — no additional minting, no VC/team pre-mine.
-- **Deflationary Halving**: Era 0 begins with an 8,000 $TOKENCAST base reward per session. The session reward halves as cumulative supply crosses 50%, 75%, 87.5%, etc.
+- **Bitcoin-like halving schedule**: Era 0 starts around 386.029411 $TOKENCAST per daily session at the 100,000-miner target. Halving occurs every 272 days, not when more miners arrive, targeting ~99% planned issuance in about five years.
 - **Squad & Referral System**:
-  - **Invited Miners**: Automatically enjoy a permanent **+20%** mining speed multiplier.
-  - **Inviters**: Earn an **8% referral bonus** on every session completed by squad members (up to 20 friends).
-  - **Squad Milestones**: Boost personal mining speed (+10% for 3 friends, +20% for 7 friends, +30% for 15+ friends).
+  - **Follower weight**: verified Farcaster followers determine a 1× to 100× creator weight in the daily pool. The onchain contract independently caps a wallet at the 100× benchmark per 24-hour claim window.
+  - **Referral reward**: after a referred miner completes seven sessions, their inviter earns an additional 8% from the shared daily pool, never deducted from the referred miner.
+  - **Anti-sybil checks**: the payout wallet must be verified on that Farcaster profile and cannot be shared by multiple MineCast FIDs.
 - **On-chain read layer**: once a contract address is configured, the app reads minted supply, current era, wallet balance, and the claim nonce directly from Base.
 - **Verified mining ledger**: Farcaster Quick Auth identifies the user, Neynar verifies the published cast belongs to that FID, and Supabase records the 24-hour session and its server-calculated allocation.
-- **Safe voucher claims**: the browser never provides an amount. The Vercel signer checks the on-chain nonce, atomically reserves the user's settled allocation, and permits one voucher per FID every 24 hours.
+- **Safe voucher claims**: the browser never provides an amount. The Vercel signer checks the on-chain nonce, atomically reserves the user's settled allocation, and permits one voucher per FID every 24 hours. A Base receipt and `Claimed` event must match the issued allocation before it is marked claimed; users must claim a settled reward before their next mining session.
 - **Anti-sybil referrals**: a referral is recorded only when the referred Farcaster account has at least 100 followers according to Neynar.
+- **Follower-weighted rewards**: verified follower tiers are 1×, 2×, 4×, 10×, 16×, 28×, 45×, 65×, 82×, and 100×. A daily allocation not distributed to eligible creators is reserved for the public Airdrop Treasury after the claim-finalisation window.
+- **Onchain daily finalisation**: after a protocol-day mining cohort (24-hour windows anchored to contract launch) has fully settled, a signed `finalizeDailyPool` call mints only `daily pool − already allocated rewards` to the immutable Airdrop Treasury. A miner's unclaimed allocation is included in `already allocated rewards`, so it never becomes treasury surplus.
 
 ---
 
@@ -31,7 +33,7 @@
 
 The mining UI can be previewed without a contract, but its browser `localStorage` balance is intentionally **not withdrawable**. Before enabling real claims:
 
-1. Deploy `TokenCast.sol` on Base or Base Sepolia with the voucher signer address.
+1. Deploy the V2 `TokenCast.sol` on Base or Base Sepolia with the voucher signer and Airdrop Treasury address. For the current test plan, the Treasury constructor value is `0x0344848d0075AF5ba6219744D4a4e8b846826903`. V2 cannot reuse the former test contract address because it adds on-chain calendar emission enforcement and the immutable 100× per-wallet claim ceiling.
 2. Copy `.env.example` to `.env.local` for local development, and set the same public contract address/network in Vercel.
 3. Set `TOKENCAST_CONTRACT_ADDRESS`, `TOKENCAST_CHAIN_ID`, and `SIGNER_PRIVATE_KEY` only as Vercel server variables. Never expose the signer with a `VITE_` prefix.
 4. Create the Supabase schema by running [`supabase/schema.sql`](supabase/schema.sql) in the Supabase SQL Editor, then configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as Vercel server variables.

@@ -73,14 +73,34 @@ export async function readCurrentEra(): Promise<number> {
   return Number(era);
 }
 
+export async function readEmissionSchedule(): Promise<{ launchTime: string; halvingSeconds: string; baseDailyWei: string }> {
+  const contract = process.env.TOKENCAST_CONTRACT_ADDRESS as `0x${string}`;
+  const chainId = Number(process.env.TOKENCAST_CHAIN_ID ?? 8453);
+  if (!isAddress(contract) || contract === zeroAddress || (chainId !== base.id && chainId !== baseSepolia.id)) {
+    throw new Error("TokenCast contract is not configured.");
+  }
+  const client = createPublicClient({ chain: chainId === baseSepolia.id ? baseSepolia : base, transport: http(process.env.BASE_RPC_URL) });
+  const abi = [
+    { type: "function", name: "launchTime", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
+    { type: "function", name: "HALVING_PERIOD", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
+    { type: "function", name: "BASE_DAILY_EMISSION", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
+  ] as const;
+  const [launchTime, halvingSeconds, baseDailyWei] = await Promise.all([
+    client.readContract({ address: contract, abi, functionName: "launchTime" }),
+    client.readContract({ address: contract, abi, functionName: "HALVING_PERIOD" }),
+    client.readContract({ address: contract, abi, functionName: "BASE_DAILY_EMISSION" }),
+  ]);
+  return { launchTime: launchTime.toString(), halvingSeconds: halvingSeconds.toString(), baseDailyWei: baseDailyWei.toString() };
+}
+
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 }
 
 export function error(error: unknown): Response {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
-  const status = /required|invalid|expired|does not belong|authenticate/i.test(message) ? 401
-    : /already has|No settled|Daily claim/i.test(message) ? 409
+  const status = /required|invalid|expired|does not belong|authenticate|verified.*wallet/i.test(message) ? 401
+    : /already has|already linked|No settled|Daily claim|Claim your previous/i.test(message) ? 409
     : 500;
   return json({ error: message }, status);
 }

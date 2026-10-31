@@ -14,7 +14,7 @@ export const DECIMALS    = 18
 
 export const MAX_SUPPLY             = 21_000_000_000  // 21 Billion
 export const SESSION_MS             = 24 * 60 * 60 * 1000 // 24 hours
-export const INITIAL_SESSION_REWARD = 8_000           // 8,000 tokens / session at Era 0 (1,000/hr)
+export const INITIAL_SESSION_REWARD = 386.029411      // Assumes the 100,000 daily-miner target in Era 0
 export const MAX_ERA                = 32
 export const GENESIS_MS             = Date.UTC(2026, 3, 22, 0, 0, 0)
 
@@ -28,17 +28,9 @@ const DAY_MS = 86_400_000
 
 // ── Invite system ─────────────────────────────────────────────────────────
 
-export const INVITE_SPEED_BOOST  = 0.20  // +20% for invited miners
 export const INVITE_REFERRAL_PCT = 0.08  // 8% referral commission for inviter
 export const MAX_INVITE_FRIENDS  = 20    // Up to 20 friends
-
-export function inviterSpeedBonus(friendCount: number): number {
-  const n = Math.max(0, Math.floor(friendCount))
-  if (n >= 15) return 0.30  // +30%
-  if (n >= 7)  return 0.20  // +20%
-  if (n >= 3)  return 0.10  // +10%
-  return 0
-}
+export const MAX_FOLLOWER_MULTIPLIER = 100
 
 // ── Era & halving ─────────────────────────────────────────────────────────
 
@@ -85,35 +77,16 @@ export function simulatedMined(now: number): number {
 
 export function followerMultiplier(followers: number): number {
   const n = Math.max(0, Math.floor(followers))
-  if (n >= 100_000) return 5.25
-  if (n >= 10_000)  return 4.4
-  if (n >= 1_000)   return 3.55
-  if (n >= 100)     return 2.7
-  if (n >= 10)      return 1.88
+  if (n >= 100_000) return 100
+  if (n >= 50_000)  return 82
+  if (n >= 25_000)  return 65
+  if (n >= 10_000)  return 45
+  if (n >= 5_000)   return 28
+  if (n >= 2_000)   return 16
+  if (n >= 1_000)   return 10
+  if (n >= 500)     return 4
+  if (n >= 10)      return 2
   return 1
-}
-
-export function speedMultiplier(
-  followers: number,
-  wasInvited: boolean,
-  friendsInvited: number,
-): number {
-  let mult = followerMultiplier(followers)
-  if (wasInvited) mult *= (1 + INVITE_SPEED_BOOST)
-  mult *= (1 + inviterSpeedBonus(friendsInvited))
-  return mult
-}
-
-export function personalReward(
-  mined: number,
-  followers: number,
-  wasInvited: boolean,
-  friendsInvited: number,
-): number {
-  const { reward } = rewardFor(mined)
-  const amount = reward * speedMultiplier(followers, wasInvited, friendsInvited)
-  const room = Math.max(0, MAX_SUPPLY - Math.max(0, mined))
-  return Math.min(amount, room)
 }
 
 export function nextHalving(mined: number): { at: number; nextReward: number } | null {
@@ -282,10 +255,10 @@ Standard: ERC-20, 18 decimals
 Max supply: 21,000,000,000 (21 billion), hard cap, no extra mint
 Issuance: Proof of Cast
 Session: 24 hours after each cast. Cast again when it ends.
-Base reward: 8,000 TOKENCAST per session at Era 0 (333.33 per hour)
-Halving: reward halves when mined supply hits 50%, then 75%, then 87.5%, and so on
-Followers: higher follower count mines faster, capped at 5.25×
-Invite: invited miner gets +20% speed. Inviter earns 8% of each friend's session.
-         3+ friends = +10% own speed, 7+ = +20%, 15+ = +30%. Max 20 friends.
-Reward locks at the moment of the cast.
+Base reward: 386.029411 TOKENCAST per daily session at the 100,000-miner target
+Halving: reward halves every 272 days. This targets ~99% planned issuance in 5 years.
+Followers: verified tiers are 1×, 2×, 4×, 10×, 16×, 28×, 45×, 65×, 82×, 100×. Daily pool is divided by weight.
+Creator cap: no wallet can claim more than the 100× benchmark for one 24-hour claim window; this cap halves with each era.
+Invite: inviter earns an additional 8% of each qualified friend's session from the shared daily pool. The friend's reward is never reduced. Max 20 friends.
+Unused daily allocation: reserved for the public Airdrop Treasury, subject to the finalisation window documented by the onchain deployment.
 `

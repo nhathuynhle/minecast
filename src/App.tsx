@@ -24,14 +24,11 @@ import {
   formatPct,
   formatSupply,
   formatTokens,
-  formatMult,
   formatWhen,
   GENESIS_MS,
   halvingEta,
   INITIAL_SESSION_REWARD,
   INVITE_REFERRAL_PCT,
-  INVITE_SPEED_BOOST,
-  inviterSpeedBonus,
   inviteUrl,
   generateInviteCode,
   ISSUANCE_SPEC,
@@ -44,7 +41,6 @@ import {
   SIM_MINERS,
   simulatedMined,
   sessionReward,
-  speedMultiplier,
   supplyAtEraStart,
   TOKEN_SYMBOL,
 } from "@/lib/tokenomics"
@@ -65,11 +61,11 @@ const STEPS = [
   },
   {
     title: "Halving Schedule",
-    body: "21 Billion hard cap. As more tokens are mined, session rewards halve like Bitcoin.",
+    body: "21 Billion hard cap. Rewards halve every 272 days, so miner growth cannot accelerate halvings.",
   },
   {
     title: "Invite Squad",
-    body: "Invite friends to mine faster. Earn 8% referral bonuses on every session they complete.",
+    body: "Invite qualifying creators. Earn an 8% referral bonus without reducing their mining reward.",
   },
 ]
 
@@ -177,11 +173,9 @@ export default function App() {
               remain={remain}
               mining={mining}
               reward={mining && session ? session.reward : quote.reward}
-              hourly={(mining && session ? session.reward : quote.reward) / 8}
+              hourly={(mining && session ? session.reward : quote.reward) / 24}
               halvingRatio={halvingRatio(networkMined)}
               castText={mining && session ? session.text : ""}
-              inviteCount={miner.invitedFriends.length}
-              wasInvited={miner.invitedBy.length >= 2}
               onCast={() => {
                 setNotice("")
                 setComposer(true)
@@ -262,6 +256,14 @@ export default function App() {
               setNotice("Username must be 2–16 characters, alphanumeric.")
               return false
             }
+            const eligibility = await fetch("/api/mine/eligibility", {
+              headers: { Authorization: `Bearer ${await farcasterAuthToken()}` },
+            })
+            const eligibilityData = await eligibility.json()
+            if (!eligibility.ok || !eligibilityData.eligible) {
+              setNotice(eligibilityData.error || "Claim your previous settled reward before posting another mining cast.")
+              return false
+            }
             const posted = await composeOnFarcaster(text)
             if (posted.status !== "posted" || !posted.hash) {
               setNotice("Composer was closed before posting. Session not started.")
@@ -336,8 +338,6 @@ function MineCard({
   hourly,
   halvingRatio: ratio,
   castText,
-  inviteCount,
-  wasInvited,
   onCast,
 }: {
   handle: string
@@ -351,13 +351,9 @@ function MineCard({
   hourly: number
   halvingRatio: number
   castText: string
-  inviteCount: number
-  wasInvited: boolean
   onCast: () => void
 }) {
   const ring = mining ? remain / SESSION_MS : 1
-  const mult = speedMultiplier(0, wasInvited, inviteCount)
-  const hasBoost = mult > 1
   return (
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
       <div className="flex items-end justify-between gap-3">
@@ -389,7 +385,6 @@ function MineCard({
         <p className="mt-4 flex items-center gap-2 text-sm text-gray-400">
           {mining ? <span className="live-dot size-2 rounded-full bg-[#8a63d2]" aria-hidden /> : null}
           {mining ? "Mining Active" : "No Active Session"}
-          {hasBoost ? <span className="rounded-full bg-[#8a63d2]/20 px-2 py-0.5 text-xs font-semibold text-[#a78bfa]">⚡ {formatMult(mult)}</span> : null}
         </p>
         <p className="mt-1 text-4xl font-semibold tabular-nums tracking-tight text-[#a78bfa]">
           {formatBalance(balance, live)}
@@ -482,14 +477,7 @@ function InvitePanel({
   const [inviterInput, setInviterInput] = useState("")
   const code = handle ? generateInviteCode(handle) : ""
   const link = handle ? inviteUrl(handle) : ""
-  const bonus = inviterSpeedBonus(friends.length)
   const hasHandle = validHandle(handle)
-
-  const tierList = [
-    { min: 3, bonus: "+10%", label: "3 Friends" },
-    { min: 7, bonus: "+20%", label: "7 Friends" },
-    { min: 15, bonus: "+30%", label: "15 Friends" },
-  ]
 
   return (
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
@@ -535,7 +523,7 @@ function InvitePanel({
               onClick={() => {
                 void navigator.share?.({
                   title: `Mine $TOKENCAST with me on MineCast!`,
-                  text: `Use code ${code} or click the link to mine 20% faster!`,
+                  text: `Use my code ${code} to join MineCast. Qualified referrals support the creator community.`,
                   url: link,
                 })
               }}
@@ -552,33 +540,13 @@ function InvitePanel({
         </p>
       )}
 
-      <h3 className="mt-6 font-semibold text-white">Squad Speed Multipliers</h3>
+      <h3 className="mt-6 font-semibold text-white">Creator Reward Rules</h3>
       <p className="mt-1 text-sm text-gray-400">
-        Invited friends mine {Math.round(INVITE_SPEED_BOOST * 100)}% faster. You also unlock personal speed boosts:
+        Referral never changes the invited miner's reward. Creator weight is verified from Farcaster followers when a session starts.
       </p>
-      <ul className="mt-3 grid gap-2">
-        {tierList.map((tier) => {
-          const reached = friends.length >= tier.min
-          return (
-            <li
-              key={tier.min}
-              className={`flex items-center justify-between gap-3 rounded-xl px-3 py-2 ${reached ? "bg-[#8a63d2]/20 border border-[#8a63d2]/40" : "bg-[#0b0f17]"}`}
-            >
-              <span className={`text-sm ${reached ? "font-semibold text-white" : "text-gray-400"}`}>
-                {tier.label} {reached ? "✓" : ""}
-              </span>
-              <span className={`text-sm font-semibold ${reached ? "text-[#a78bfa]" : "text-gray-400"}`}>
-                {tier.bonus} Mining Speed
-              </span>
-            </li>
-          )
-        })}
-      </ul>
-      {bonus > 0 ? (
-        <p className="mt-2 text-sm font-semibold text-green-400">
-          ⚡ You have a +{Math.round(bonus * 100)}% speed boost from {friends.length} friends!
-        </p>
-      ) : null}
+      <p className="mt-3 rounded-xl bg-[#0b0f17] px-3 py-3 text-sm text-[#c4b5fd]">
+        1k followers = 10× · 10k = 45× · 100k = 100×. No wallet can claim above the 100× onchain ceiling for one 24-hour window.
+      </p>
 
       {!invitedBy ? (
         <div className="mt-6">
@@ -608,7 +576,7 @@ function InvitePanel({
         </div>
       ) : (
         <p className="mt-6 text-sm text-gray-400">
-          🤝 Invited by <span className="font-semibold text-white">@{invitedBy}</span> · +{Math.round(INVITE_SPEED_BOOST * 100)}% speed boost active
+          🤝 Invited by <span className="font-semibold text-white">@{invitedBy}</span> · referral is recorded after eligibility verification
         </p>
       )}
 
@@ -878,7 +846,7 @@ function TokenPanel({
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
       <h2 className="flex items-center gap-3 text-lg font-semibold text-white"><img src="/tokencast-logo.png" alt="" width={36} height={36} className="size-9 shrink-0 rounded-lg" />$TOKENCAST on Base</h2>
       <p className="mt-2 text-sm text-gray-400">
-        Proof of Cast on Base. No hardware rigs. One miner, one session, locked reward, zero pre-mine.
+        Proof of Cast on Base. One verified creator, one 24-hour session, zero pre-mine.
       </p>
 
       <div className={`mt-5 rounded-xl border p-4 ${TOKENCAST_IS_DEPLOYED ? "border-green-500/30 bg-green-500/10" : "border-amber-500/30 bg-amber-500/10"}`}>
@@ -993,8 +961,8 @@ function TokenPanel({
 
       <h3 className="mt-6 font-semibold text-white">Halving Dynamics</h3>
       <p className="mt-2 text-sm text-gray-400">
-        Era 0 yields {formatTokens(INITIAL_SESSION_REWARD)} {TOKEN_SYMBOL} per 24 hours ({formatTokens(INITIAL_SESSION_REWARD / 24)}/hr). Claims are limited to one per Farcaster account every 24 hours.
-        When total mined supply reaches 10.5 Billion (50%), session rewards cut in half. Subsequent checkpoints at 75%, 87.5%, identical to Bitcoin.
+        Era 0 benchmark is {formatTokens(INITIAL_SESSION_REWARD)} {TOKEN_SYMBOL} per 24 hours at 1×. Creator weight reaches 100× at 100k verified followers, while an onchain 100× ceiling and one claim per 24 hours limit each wallet.
+        Rewards halve every 272 days, independent of miner count. At the 100,000 daily-miner target, the schedule reaches roughly 99% planned issuance in five years; undistributed pool is reserved for community airdrops after the finalisation window.
       </p>
 
       <button

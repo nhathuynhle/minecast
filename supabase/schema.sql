@@ -2,6 +2,7 @@ create table if not exists public.miners (
   fid bigint primary key,
   username text,
   wallet_address text,
+  follower_count bigint not null default 0,
   referral_code text unique not null,
   inviter_fid bigint references public.miners(fid),
   last_claim_at timestamptz,
@@ -14,6 +15,8 @@ create table if not exists public.mining_sessions (
   cast_hash text unique not null,
   wallet_address text not null,
   reward_wei numeric(78, 0) not null check (reward_wei > 0),
+  reward_weight numeric(20, 0) not null default 1 check (reward_weight > 0),
+  emission_day date not null default current_date,
   started_at timestamptz not null default now(),
   ends_at timestamptz not null,
   settled_at timestamptz,
@@ -22,8 +25,15 @@ create table if not exists public.mining_sessions (
 
 -- Safe to run on the existing test database as a migration.
 alter table public.miners add column if not exists last_claim_at timestamptz;
+alter table public.miners add column if not exists follower_count bigint not null default 0;
+create unique index if not exists one_miner_per_wallet
+  on public.miners (lower(wallet_address)) where wallet_address is not null;
 alter table public.mining_sessions drop constraint if exists session_duration;
 alter table public.mining_sessions add constraint session_duration check (ends_at = started_at + interval '24 hours');
+alter table public.mining_sessions add column if not exists emission_day date;
+update public.mining_sessions set emission_day = started_at::date where emission_day is null;
+alter table public.mining_sessions alter column emission_day set not null;
+alter table public.mining_sessions add column if not exists reward_weight numeric(20, 0) not null default 1;
 
 create unique index if not exists one_active_session_per_miner
   on public.mining_sessions (fid) where settled_at is null;
@@ -92,32 +102,85 @@ $$;
 -- Settling is deliberately a single database operation. This makes repeated
 -- browser requests harmless and prevents two requests from allocating a
 -- completed session twice.
-create or replace function public.settle_ended_sessions(p_fid bigint)
+drop function if exists public.settle_ended_sessions(bigint);
+
+create or replace function public.settle_ended_sessions(
+  p_fid bigint,
+  p_launch_time numeric,
+  p_halving_seconds numeric,
+  p_base_daily_wei numeric
+)
 returns table(session_id uuid) language plpgsql security definer set search_path = public as $$
 begin
   return query
   with eligible as (
-    select session.id, session.fid, session.wallet_address, session.reward_wei, miner.inviter_fid
+    select
+      session.id,
+      session.fid,
+      session.wallet_address,
+      session.emission_day,
+      session.reward_weight,
+      miner.inviter_fid,
+      (miner.inviter_fid is not null
+        and inviter.wallet_address is not null
+        and (select count(*) from mining_sessions completed where completed.fid = session.fid and completed.settled_at is not null) >= 6
+        and (select count(*) from miners referred where referred.inviter_fid = miner.inviter_fid) <= 20
+      ) as referral_qualified
     from mining_sessions session
     join miners miner on miner.fid = session.fid
+    left join miners inviter on inviter.fid = miner.inviter_fid
     where session.fid = p_fid and session.settled_at is null and session.ends_at <= now()
     for update
+  ), daily_weights as (
+    select
+      sum(session.reward_weight) as total_weight,
+      sum(case when miner.inviter_fid is not null
+        and inviter.wallet_address is not null
+        and (select count(*) from mining_sessions completed where completed.fid = session.fid and completed.settled_at is not null) >= 6
+        and (select count(*) from miners referred where referred.inviter_fid = miner.inviter_fid) <= 20
+        then session.reward_weight else 0 end
+      ) as referral_weight
+    from mining_sessions session
+    join miners miner on miner.fid = session.fid
+    left join miners inviter on inviter.fid = miner.inviter_fid
+    where session.emission_day = (select emission_day from eligible limit 1)
+  ), priced as (
+    select eligible.*, least(
+      floor(
+        (p_base_daily_wei / power(2, greatest(0, floor(extract(epoch from (eligible.emission_day::timestamp - to_timestamp(p_launch_time))) / p_halving_seconds)::integer)))
+        * eligible.reward_weight
+        / nullif(daily_weights.total_weight + daily_weights.referral_weight * 8 / 100, 0)
+      ),
+      -- A verified creator may receive at most the public 100x benchmark.
+      -- The residual stays unallocated for the later Airdrop Treasury finalisation.
+      floor(
+        (p_base_daily_wei / power(2, greatest(0, floor(extract(epoch from (eligible.emission_day::timestamp - to_timestamp(p_launch_time))) / p_halving_seconds)::integer)))
+        / 100000 * 100
+      )
+    ) as reward_wei
+    from eligible
+    cross join daily_weights
+  ), updated_sessions as (
+    update mining_sessions session
+    set reward_wei = priced.reward_wei
+    from priced
+    where session.id = priced.id
+    returning session.id
   ), allocations as (
     insert into claim_allocations (session_id, fid, wallet_address, amount_wei)
-    select id, fid, wallet_address, reward_wei from eligible
+    select id, fid, wallet_address, reward_wei from priced
     union all
-    select eligible.id, inviter.fid, inviter.wallet_address, floor(eligible.reward_wei * 8 / 100)
-    from eligible
-    join miners inviter on inviter.fid = eligible.inviter_fid
-    where inviter.wallet_address is not null
-      and (select count(*) from miners referred where referred.inviter_fid = inviter.fid) <= 20
+    select priced.id, inviter.fid, inviter.wallet_address, floor(priced.reward_wei * 8 / 100)
+    from priced
+    join miners inviter on inviter.fid = priced.inviter_fid
+    where priced.referral_qualified
     on conflict (session_id, fid) do nothing
     returning session_id
   )
   update mining_sessions session
   set settled_at = now()
-  from eligible
-  where session.id = eligible.id
+  from updated_sessions
+  where session.id = updated_sessions.id
   returning session.id;
 end;
 $$;

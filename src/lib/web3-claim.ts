@@ -1,7 +1,7 @@
 import { createWalletClient, custom, getAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import { TOKENCAST_ABI, TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "./contract";
-import { readClaimNonce } from "./onchain";
+import { readClaimNonce, waitForClaimReceipt } from "./onchain";
 import { farcasterAuthToken } from "./farcaster";
 
 export type ClaimStatus = "idle" | "requesting_voucher" | "sending_tx" | "success" | "error";
@@ -65,6 +65,19 @@ export async function executeClaimOnBase({
       args: [BigInt(amountWei), BigInt(deadline), Number(v), r, s],
       account,
     });
+
+    onStatusChange("sending_tx", "Transaction sent. Waiting for Base confirmation...");
+    const receipt = await waitForClaimReceipt(hash);
+    if (receipt.status !== "success") throw new Error("Claim transaction reverted on Base.");
+    const confirmation = await fetch("/api/claim/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${await farcasterAuthToken()}` },
+      body: JSON.stringify({ userAddress: account, nonce: nonce.toString(), transactionHash: hash }),
+    });
+    const confirmationData = await confirmation.json();
+    if (!confirmation.ok || !confirmationData.confirmed) {
+      throw new Error(confirmationData.error || "Base claim could not be confirmed by the mining ledger.");
+    }
 
     onStatusChange("success", `Claim thành công! Tx Hash: ${hash}`);
     return hash;

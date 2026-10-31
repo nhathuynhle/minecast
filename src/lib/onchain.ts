@@ -46,3 +46,7 @@ export async function readClaimNonce(address: `0x${string}`): Promise<bigint> {
     args: [address],
   })
 }
+
+export async function waitForClaimReceipt(hash: `0x${string}`) {
+  return publicClient.waitForTransactionReceipt({ hash });
+}
