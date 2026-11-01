@@ -1,6 +1,6 @@
-import { error, json, requireFarcasterUser, supabase } from "../_lib/backend.js";
+import { error, json, requireFarcasterUser, supabase } from "../_lib/backend";
 
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "edge" };
 
 /** Preflight used before opening the Farcaster composer. The start endpoint repeats this check. */
 export default async function handler(request: Request) {

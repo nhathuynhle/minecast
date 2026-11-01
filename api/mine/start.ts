@@ -1,4 +1,4 @@
-import { error, json, readCurrentEra, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend.js";
+import { error, json, readCurrentEra, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
 
 const SESSION_SECONDS = 24 * 60 * 60;
 // UI estimate. The actual settlement divides the fixed daily budget across
@@ -18,7 +18,7 @@ function followerWeight(followers: number): bigint {
   return 1n;
 }
 
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "edge" };
 
 export default async function handler(request: Request) {
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);

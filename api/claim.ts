@@ -1,11 +1,11 @@
 import { privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, http, isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend.js";
+import { requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend";
 
 // Types cho Vercel Edge/Serverless function
 export const config = {
-  runtime: "nodejs",
+  runtime: "edge",
 };
 
 export default async function handler(request: Request) {

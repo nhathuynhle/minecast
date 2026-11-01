@@ -1,6 +1,6 @@
 import { createPublicClient, getAddress, http, isAddress, parseEventLogs, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { error, json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend.js";
+import { error, json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
 
 const claimedEventAbi = [{
   type: "event",
@@ -13,7 +13,7 @@ const claimedEventAbi = [{
   ],
 }] as const;
 
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "edge" };
 
 /** Marks a voucher allocation claimed only after the Base receipt proves it. */
 export default async function handler(request: Request) {

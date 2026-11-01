@@ -1,11 +1,14 @@
 import { createPublicClient, http, isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { createClient as createQuickAuthClient } from "@farcaster/quick-auth";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const FARCASTER_DOMAIN = "minecast-beta.vercel.app";
-const quickAuthClient = createQuickAuthClient();
+const FARCASTER_AUTH_ORIGIN = "https://auth.farcaster.xyz";
+const FARCASTER_JWKS = createRemoteJWKSet(
+  new URL(`${FARCASTER_AUTH_ORIGIN}/.well-known/jwks.json`),
+);
 
 function required(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is not configured.`);
@@ -33,10 +36,12 @@ export async function requireFarcasterUser(request: Request): Promise<number> {
   if (!token) throw new Error("Farcaster authentication is required.");
 
   try {
-    // The official client validates signature, issuer, expiration and audience
-    // against Farcaster's JWKS. Sending a Bearer header to /verify-jwt is not
-    // sufficient because that endpoint also requires the expected domain.
-    const payload = await quickAuthClient.verifyJwt({ token, domain: FARCASTER_DOMAIN });
+    // Validate signature, issuer, expiration and this Mini App's domain against
+    // Farcaster's public JWKS without exposing the token to another service.
+    const { payload } = await jwtVerify(token, FARCASTER_JWKS, {
+      issuer: FARCASTER_AUTH_ORIGIN,
+      audience: FARCASTER_DOMAIN,
+    });
     const fid = Number(payload.sub);
     if (!Number.isSafeInteger(fid) || fid < 1) throw new Error("Invalid Farcaster FID.");
     return fid;
