@@ -42,10 +42,11 @@ The mining UI can be previewed without a contract, but its browser `localStorage
 
 ## Private operations dashboard
 
-The **Admin** tab is a server-protected operations dashboard for miner inflow, live and settled sessions, and allocation/claim outflow. It authenticates with Farcaster Quick Auth and is restricted by FID in the API route — hiding the tab is not the access control.
+The Mini App never exposes operational controls. The separate, no-index operations page is at `https://minecast-beta.vercel.app/ops.html`. It uses a time-limited wallet signature, not an onchain transaction, to access the protected server ledger.
 
-- `MINECAST_ADMIN_FIDS` (optional): comma-separated operator FIDs. The current app-owner FID `3356898` is used as the safe default.
-- Set this variable in Vercel before adding another operator or moving ownership.
+- `MINECAST_ADMIN_WALLETS` (optional): comma-separated operator wallets. The current deployer wallet `0x40537Ce355e3440d9d9855667Aa7546AB17Ce252` is used as the safe default.
+- `MINECAST_ADMIN_FIDS` (optional): retains the existing Farcaster-admin API path for internal tooling; it is not shown in the Mini App.
+- Set these Vercel variables before adding another operator or moving ownership.
 
 ## Farcaster Mini App registration
 

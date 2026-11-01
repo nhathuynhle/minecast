@@ -1,4 +1,4 @@
-import { error, json, requireFarcasterUser, requireMineCastAdmin, supabase } from "../_lib/backend";
+import { error, json, requireFarcasterUser, requireMineCastAdmin, requireOpsSession, supabase } from "../_lib/backend";
 
 export const config = { runtime: "edge" };
 
@@ -19,8 +19,12 @@ function sumWei(rows: Allocation[], status: string): string {
 export default async function handler(request: Request) {
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
   try {
-    const fid = await requireFarcasterUser(request);
-    requireMineCastAdmin(fid);
+    if (request.headers.get("x-minecast-admin-token")) {
+      await requireOpsSession(request);
+    } else {
+      const fid = await requireFarcasterUser(request);
+      requireMineCastAdmin(fid);
+    }
 
     const [minerCountResponse, activeCountResponse, completedCountResponse, claimedCountResponse, minersResponse, sessionsResponse, claimsResponse, allocationsResponse] = await Promise.all([
       supabase("miners?select=fid", { method: "HEAD", headers: { Prefer: "count=exact" } }),

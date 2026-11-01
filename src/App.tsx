@@ -175,19 +175,10 @@ export default function App() {
               <p className="text-sm text-gray-400">Cast once. Mine for 24 hours.</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setTab("admin")}
-              className="flex h-9 items-center gap-1.5 rounded-xl border border-gray-700 bg-[#141b26] px-3 text-sm font-semibold text-gray-200 transition hover:border-[#8a63d2] hover:text-white"
-            >
-              <ShieldCheck className="size-4 text-[#a78bfa]" /> Admin
-            </button>
-            <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">Base</p>
-          </div>
+          <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">Base</p>
         </header>
 
-        {tab === "admin" ? <AdminDashboard /> : <div className="mt-5 grid items-start gap-4 lg:grid-cols-5">
+        <div className="mt-5 grid items-start gap-4 lg:grid-cols-5">
           <div className={`${tab === "mine" ? "" : "hidden lg:block"} lg:col-span-2`}>
             <MineCard
               handle={miner.handle}
@@ -255,16 +246,15 @@ export default function App() {
               />
             </div>
           </div>
-        </div>}
+        </div>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-800 bg-[#0b0f17]/95 backdrop-blur lg:hidden">
-        <div className="mx-auto grid max-w-lg grid-cols-5">
+        <div className="mx-auto grid max-w-lg grid-cols-4">
           <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<Gem className="size-5" />} />
           <NavButton active={tab === "invite"} onClick={() => setTab("invite")} label="Squad" icon={<Users className="size-5" />} />
           <NavButton active={tab === "network"} onClick={() => setTab("network")} label="Network" icon={<Radio className="size-5" />} />
           <NavButton active={tab === "token"} onClick={() => setTab("token")} label="Token" icon={<Layers className="size-5" />} />
-          <NavButton active={tab === "admin"} onClick={() => setTab("admin")} label="Admin" icon={<ShieldCheck className="size-5" />} />
         </div>
       </nav>
 

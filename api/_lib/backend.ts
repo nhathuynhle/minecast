@@ -1,4 +1,4 @@
-import { createPublicClient, fallback, http, isAddress, zeroAddress } from "viem";
+import { createPublicClient, fallback, getAddress, http, isAddress, verifyMessage, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
@@ -78,6 +78,91 @@ export function requireMineCastAdmin(fid: number): void {
   if (!adminFids.includes(fid)) throw new Error("Admin access is required.");
 }
 
+const OPS_SESSION_MS = 8 * 60 * 60 * 1000;
+const OPS_CHALLENGE_MS = 5 * 60 * 1000;
+
+function base64Url(value: Uint8Array | string): string {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlBytes(value: string): Uint8Array {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+}
+
+async function opsHmac(value: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(required(SUPABASE_KEY, "SUPABASE_SERVICE_ROLE_KEY")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+}
+
+async function validOpsHmac(value: string, signature: string): Promise<boolean> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(required(SUPABASE_KEY, "SUPABASE_SERVICE_ROLE_KEY")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  return crypto.subtle.verify("HMAC", key, base64UrlBytes(signature), new TextEncoder().encode(value));
+}
+
+export function requireMineCastAdminWallet(value: string): `0x${string}` {
+  if (!isAddress(value)) throw new Error("A valid admin wallet is required.");
+  const wallet = getAddress(value);
+  const configured = process.env.MINECAST_ADMIN_WALLETS ?? "0x40537Ce355e3440d9d9855667Aa7546AB17Ce252";
+  const allowed = configured.split(",").filter(isAddress).map((address) => getAddress(address));
+  if (!allowed.some((address) => address.toLowerCase() === wallet.toLowerCase())) {
+    throw new Error("Admin wallet access is required.");
+  }
+  return wallet;
+}
+
+export async function createOpsChallenge(value: string) {
+  const wallet = requireMineCastAdminWallet(value);
+  const expiresAt = Date.now() + OPS_CHALLENGE_MS;
+  const nonce = base64Url(await opsHmac(`challenge:${wallet.toLowerCase()}:${expiresAt}`));
+  const message = `MineCast Operations Login\nWallet: ${wallet}\nExpires: ${expiresAt}\nNonce: ${nonce}`;
+  return { wallet, expiresAt, nonce, message };
+}
+
+export async function issueOpsSession(input: { wallet: string; expiresAt: number; nonce: string; signature: `0x${string}` }): Promise<string> {
+  const wallet = requireMineCastAdminWallet(input.wallet);
+  if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt < Date.now() || input.expiresAt > Date.now() + OPS_CHALLENGE_MS) {
+    throw new Error("Admin login challenge has expired.");
+  }
+  const validNonce = await validOpsHmac(`challenge:${wallet.toLowerCase()}:${input.expiresAt}`, input.nonce);
+  if (!validNonce) throw new Error("Invalid admin login challenge.");
+  const message = `MineCast Operations Login\nWallet: ${wallet}\nExpires: ${input.expiresAt}\nNonce: ${input.nonce}`;
+  if (!(await verifyMessage({ address: wallet, message, signature: input.signature }))) {
+    throw new Error("Admin wallet signature could not be verified.");
+  }
+  const payload = base64Url(JSON.stringify({ wallet, exp: Date.now() + OPS_SESSION_MS }));
+  return `${payload}.${base64Url(await opsHmac(`session:${payload}`))}`;
+}
+
+export async function requireOpsSession(request: Request): Promise<`0x${string}`> {
+  const token = request.headers.get("x-minecast-admin-token");
+  if (!token) throw new Error("Admin session is required.");
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature || !(await validOpsHmac(`session:${payload}`, signature))) throw new Error("Invalid admin session.");
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(base64UrlBytes(payload))) as { wallet?: string; exp?: number };
+    if (!parsed.wallet || !Number.isSafeInteger(parsed.exp) || parsed.exp < Date.now()) throw new Error("expired");
+    return requireMineCastAdminWallet(parsed.wallet);
+  } catch {
+    throw new Error("Admin session has expired.");
+  }
+}
+
 export function requireWallet(value: unknown): `0x${string}` {
   if (typeof value !== "string" || !isAddress(value)) throw new Error("A valid Base wallet address is required.");
   return value as `0x${string}`;
@@ -137,7 +222,7 @@ export function error(error: unknown): Response {
   if (/cloudflare|<!doctype|http request failed|timed? out|fetch failed|\b50[0234]\b/i.test(message)) {
     return json({ error: "Base RPC is temporarily unavailable. Please try again." }, 503);
   }
-  if (/admin access/i.test(message)) return json({ error: message }, 403);
+  if (/admin (access|wallet|session|login|signature)|invalid admin/i.test(message)) return json({ error: message }, 403);
   const status = /required|invalid|expired|does not belong|authenticate|verified.*wallet/i.test(message) ? 401
     : /already has|already linked|No settled|Daily claim|Claim your previous/i.test(message) ? 409
     : 500;
