@@ -9,7 +9,13 @@
     "name": "MineCast",
     "iconUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
     "homeUrl": "https://minecast-beta.vercel.app",
+    "imageUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
+    "buttonTitle": "Mine $TOKENCAST",
     "splashImageUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
-    "splashBackgroundColor": "#0b0f17"
+    "splashBackgroundColor": "#0b0f17",
+    "requiredCapabilities": [
+      "actions.composeCast",
+      "wallet.getEthereumProvider"
+    ]
   }
 }

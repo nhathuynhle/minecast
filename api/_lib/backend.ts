@@ -1,9 +1,11 @@
 import { createPublicClient, http, isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
+import { createClient as createQuickAuthClient } from "@farcaster/quick-auth";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const FARCASTER_AUDIENCE = process.env.FARCASTER_AUTH_AUDIENCE;
+const FARCASTER_DOMAIN = "minecast-beta.vercel.app";
+const quickAuthClient = createQuickAuthClient();
 
 function required(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is not configured.`);
@@ -30,17 +32,17 @@ export async function requireFarcasterUser(request: Request): Promise<number> {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token) throw new Error("Farcaster authentication is required.");
 
-  const response = await fetch("https://auth.farcaster.xyz/verify-jwt", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) throw new Error("Farcaster authentication token is invalid or expired.");
-  const payload = await response.json();
-  const audience = payload.aud ?? payload.payload?.aud;
-  const fid = Number(payload.fid ?? payload.sub ?? payload.payload?.fid ?? payload.payload?.sub);
-  if (audience !== required(FARCASTER_AUDIENCE, "FARCASTER_AUTH_AUDIENCE") || !Number.isSafeInteger(fid) || fid < 1) {
-    throw new Error("Farcaster authentication token does not belong to this app.");
+  try {
+    // The official client validates signature, issuer, expiration and audience
+    // against Farcaster's JWKS. Sending a Bearer header to /verify-jwt is not
+    // sufficient because that endpoint also requires the expected domain.
+    const payload = await quickAuthClient.verifyJwt({ token, domain: FARCASTER_DOMAIN });
+    const fid = Number(payload.sub);
+    if (!Number.isSafeInteger(fid) || fid < 1) throw new Error("Invalid Farcaster FID.");
+    return fid;
+  } catch {
+    throw new Error("Farcaster authentication token is invalid, expired, or belongs to another domain.");
   }
-  return fid;
 }
 
 export function requireWallet(value: unknown): `0x${string}` {

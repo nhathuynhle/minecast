@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
-import { bootFarcaster, composeOnFarcaster, farcasterAuthToken } from "@/lib/farcaster"
+import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch } from "@/lib/farcaster"
 import {
   accrued,
   cleanHandle,
@@ -103,8 +103,7 @@ export default function App() {
         const completed = Boolean(current.session && t >= current.session.endsAt)
         const next = settle(current, t)
         if (completed) {
-          void farcasterAuthToken()
-            .then((token) => fetch("/api/mine/settle", { method: "POST", headers: { Authorization: `Bearer ${token}` } }))
+          void farcasterFetch("/api/mine/settle", { method: "POST" })
             .catch(() => undefined)
         }
         return next === current ? current : next
@@ -115,8 +114,7 @@ export default function App() {
     bootFarcaster().then((username) => {
       if (!username) return
       setMiner((current) => (current.handle ? current : { ...current, handle: cleanHandle(username) }))
-      void farcasterAuthToken()
-        .then((token) => fetch("/api/mine/settle", { method: "POST", headers: { Authorization: `Bearer ${token}` } }))
+      void farcasterFetch("/api/mine/settle", { method: "POST" })
         .catch(() => undefined)
     })
     return () => window.clearInterval(id)
@@ -256,9 +254,7 @@ export default function App() {
               setNotice("Username must be 2–16 characters, alphanumeric.")
               return false
             }
-            const eligibility = await fetch("/api/mine/eligibility", {
-              headers: { Authorization: `Bearer ${await farcasterAuthToken()}` },
-            })
+            const eligibility = await farcasterFetch("/api/mine/eligibility")
             const eligibilityData = await eligibility.json()
             if (!eligibility.ok || !eligibilityData.eligible) {
               setNotice(eligibilityData.error || "Claim your previous settled reward before posting another mining cast.")
@@ -274,9 +270,9 @@ export default function App() {
               setNotice("Connect your Base wallet before starting a mining session.")
               return false
             }
-            const serverResponse = await fetch("/api/mine/start", {
+            const serverResponse = await farcasterFetch("/api/mine/start", {
               method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${await farcasterAuthToken()}` },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ castHash: posted.hash, walletAddress: wallet, username: handle, referrerHandle: current.invitedBy }),
             })
             if (!serverResponse.ok) {
@@ -775,6 +771,7 @@ function TokenPanel({
   const [onchain, setOnchain] = useState<OnchainSnapshot | null>(null)
   const [onchainError, setOnchainError] = useState("")
   const [loadingOnchain, setLoadingOnchain] = useState(false)
+  const [walletConnecting, setWalletConnecting] = useState(false)
 
   const payoutOk = validPayout(payout)
   const facts = [
@@ -789,17 +786,18 @@ function TokenPanel({
   ]
 
   async function handleConnectWallet() {
-    if (typeof window !== "undefined" && (window as any).ethereum) {
-      try {
-        const accounts = await (window as any).ethereum.request({ method: "eth_requestAccounts" })
-        if (accounts && accounts[0]) {
-          onPayout(accounts[0])
-        }
-      } catch (err: any) {
-        alert(err.message || "Could not connect wallet")
-      }
-    } else {
-      alert("No Web3 wallet found. Please open inside Warpcast or a Web3 browser (MetaMask, Coinbase Wallet).")
+    setWalletConnecting(true)
+    setStatusMsg("")
+    try {
+      const account = await connectFarcasterWallet(TOKENCAST_CHAIN_ID)
+      onPayout(account)
+      setClaimStatus("idle")
+      setStatusMsg(`Farcaster wallet connected: ${account.slice(0, 6)}...${account.slice(-4)}`)
+    } catch (err: any) {
+      setClaimStatus("error")
+      setStatusMsg(err.message || "Could not connect the Farcaster wallet.")
+    } finally {
+      setWalletConnecting(false)
     }
   }
 
@@ -893,7 +891,7 @@ function TokenPanel({
         </div>
 
         <p className="mt-2 text-sm text-gray-300">
-          Local mining balance: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
+          Browser display balance: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
         </p>
         <p className="mt-1 text-xs text-gray-400">A server-verified claim ledger determines the withdrawable amount; the browser never chooses it.</p>
 
@@ -909,10 +907,11 @@ function TokenPanel({
           <button
             type="button"
             onClick={handleConnectWallet}
-            className="flex h-11 items-center justify-center gap-2 rounded-xl border border-gray-700 bg-[#0b0f17] px-3 text-sm font-semibold text-gray-200 transition hover:bg-gray-800"
+            disabled={walletConnecting}
+            className="flex h-11 items-center justify-center gap-2 rounded-xl border border-gray-700 bg-[#0b0f17] px-3 text-sm font-semibold text-gray-200 transition hover:bg-gray-800 disabled:opacity-50"
           >
-            <Wallet className="size-4" />
-            Connect
+            {walletConnecting ? <Loader2 className="size-4 animate-spin" /> : <Wallet className="size-4" />}
+            {walletConnecting ? "Connecting..." : "Connect Farcaster wallet"}
           </button>
         </div>
 
