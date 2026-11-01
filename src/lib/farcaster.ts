@@ -12,6 +12,11 @@ type MiniSdk = {
   }
 }
 
+export type FarcasterIdentity = {
+  fid: number
+  username: string
+}
+
 export type EthereumProvider = {
   request: (args: { method: string; params?: readonly unknown[] | object }) => Promise<unknown>
 }
@@ -41,7 +46,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   })
 }
 
-export async function bootFarcaster(): Promise<string | null> {
+export async function bootFarcaster(): Promise<FarcasterIdentity | null> {
   if (typeof window === "undefined") return null
   const sdk = await loadSdk()
   if (!sdk) return null
@@ -49,8 +54,9 @@ export async function bootFarcaster(): Promise<string | null> {
   if (!inside) return null
   await withTimeout(sdk.actions.ready(), 1500, undefined)
   const ctx = await withTimeout(sdk.context, 1500, {})
+  const fid = Number(ctx.user?.fid)
   const username = ctx.user?.username
-  return username ? username : null
+  return Number.isSafeInteger(fid) && fid > 0 && username ? { fid, username } : null
 }
 
 export async function composeOnFarcaster(

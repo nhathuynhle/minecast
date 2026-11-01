@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
-import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch } from "@/lib/farcaster"
+import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch, type FarcasterIdentity } from "@/lib/farcaster"
 import {
   accrued,
   cleanHandle,
@@ -76,6 +76,7 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [composer, setComposer] = useState(false)
   const [notice, setNotice] = useState("")
+  const [farcasterIdentity, setFarcasterIdentity] = useState<FarcasterIdentity | null>(null)
   const minerRef = useRef(miner)
   minerRef.current = miner
 
@@ -94,7 +95,8 @@ export default function App() {
 
   useEffect(() => {
     const stored = settle(loadMiner(), Date.now())
-    setMiner(stored)
+    // Local storage may keep balances/session UI, but never an identity.
+    setMiner({ ...stored, handle: "" })
     setReady(true)
     const tick = () => {
       const t = Date.now()
@@ -111,9 +113,14 @@ export default function App() {
     }
     tick()
     const id = window.setInterval(tick, 1000)
-    bootFarcaster().then((username) => {
-      if (!username) return
-      setMiner((current) => (current.handle ? current : { ...current, handle: cleanHandle(username) }))
+    bootFarcaster().then((identity) => {
+      if (!identity) return
+      const username = cleanHandle(identity.username)
+      if (!validHandle(username)) return
+      setFarcasterIdentity({ ...identity, username })
+      // Never preserve a browser-entered or cached identity. The SDK context is
+      // the only source of truth for the signed-in miner shown in the UI.
+      setMiner((current) => ({ ...current, handle: username }))
       void farcasterFetch("/api/mine/settle", { method: "POST" })
         .catch(() => undefined)
     })
@@ -133,10 +140,6 @@ export default function App() {
   const networkMined = Math.min(MAX_SUPPLY, simulatedMined(clock) + miner.balance + (mining ? pending : 0))
   const quote = rewardFor(networkMined)
   const remain = mining && session && now ? session.endsAt - now : SESSION_MS
-
-  function setHandle(value: string) {
-    setMiner((current) => ({ ...current, handle: cleanHandle(value) }))
-  }
 
   function setPayout(value: string) {
     const next = value.trim()
@@ -164,7 +167,7 @@ export default function App() {
           <div className={`${tab === "mine" ? "" : "hidden lg:block"} lg:col-span-2`}>
             <MineCard
               handle={miner.handle}
-              onHandle={setHandle}
+              identityVerified={Boolean(farcasterIdentity)}
               era={now ? quote.era : 0}
               balance={shownBalance}
               live={mining}
@@ -249,9 +252,9 @@ export default function App() {
           onNotice={setNotice}
           onPublish={async (text) => {
             const current = minerRef.current
-            const handle = cleanHandle(current.handle)
-            if (!validHandle(handle)) {
-              setNotice("Username must be 2–16 characters, alphanumeric.")
+            const handle = cleanHandle(farcasterIdentity?.username ?? "")
+            if (!farcasterIdentity || !validHandle(handle)) {
+              setNotice("Open MineCast inside Farcaster to verify your miner identity.")
               return false
             }
             const eligibility = await farcasterFetch("/api/mine/eligibility")
@@ -273,7 +276,7 @@ export default function App() {
             const serverResponse = await farcasterFetch("/api/mine/start", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ castHash: posted.hash, walletAddress: wallet, username: handle, referrerHandle: current.invitedBy }),
+              body: JSON.stringify({ castHash: posted.hash, walletAddress: wallet, referrerHandle: current.invitedBy }),
             })
             if (!serverResponse.ok) {
               const data = await serverResponse.json().catch(() => ({}))
@@ -324,7 +327,7 @@ function Mark() {
 
 function MineCard({
   handle,
-  onHandle,
+  identityVerified,
   era,
   balance,
   live,
@@ -337,7 +340,7 @@ function MineCard({
   onCast,
 }: {
   handle: string
-  onHandle: (value: string) => void
+  identityVerified: boolean
   era: number
   balance: number
   live: boolean
@@ -353,23 +356,16 @@ function MineCard({
   return (
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
       <div className="flex items-end justify-between gap-3">
-        <label className="min-w-0 flex-1">
-          <span className="text-sm text-gray-400">Miner</span>
+        <div className="min-w-0 flex-1">
+          <span className="text-sm text-gray-400">Verified Miner</span>
           <span className="mt-1 flex h-12 items-center gap-1 rounded-xl border border-gray-700 bg-[#0b0f17] px-3">
             <span className="text-gray-400" aria-hidden>@</span>
-            <input
-              value={handle}
-              onChange={(event) => onHandle(event.target.value)}
-              placeholder="your-username"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              maxLength={16}
-              aria-label="Farcaster Handle"
-              className="h-full w-full bg-transparent text-base text-white outline-none placeholder:text-gray-500"
-            />
+            <span aria-label="Verified Farcaster Handle" className="min-w-0 flex-1 truncate text-base text-white">
+              {handle || "connect-in-farcaster"}
+            </span>
+            <ShieldCheck className={`size-4 shrink-0 ${identityVerified ? "text-green-400" : "text-gray-600"}`} aria-label={identityVerified ? "Farcaster identity verified" : "Farcaster identity unavailable"} />
           </span>
-        </label>
+        </div>
         <div className="pb-1 text-right">
           <p className="text-sm text-gray-400">Era</p>
           <p className="text-2xl font-semibold tabular-nums text-white">{era}</p>

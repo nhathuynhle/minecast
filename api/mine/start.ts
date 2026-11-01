@@ -24,7 +24,7 @@ export default async function handler(request: Request) {
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   try {
     const fid = await requireFarcasterUser(request);
-    const { castHash, walletAddress, username, referrerHandle } = await request.json();
+    const { castHash, walletAddress, referrerHandle } = await request.json();
     const wallet = requireWallet(walletAddress);
     if (typeof castHash !== "string" || !/^0x[a-fA-F0-9]{40}$/.test(castHash)) throw new Error("A valid Farcaster cast hash is required.");
 
@@ -36,6 +36,13 @@ export default async function handler(request: Request) {
     if (!castResponse.ok) throw new Error("Could not verify the Farcaster cast.");
     const cast = (await castResponse.json()).cast;
     if (!cast || Number(cast.author?.fid) !== fid) throw new Error("The cast does not belong to the authenticated Farcaster account.");
+
+    const canonicalUsername = typeof cast.author?.username === "string"
+      ? cast.author.username.replace(/^@+/, "").toLowerCase()
+      : "";
+    if (!/^[a-z0-9](?:[a-z0-9._]{0,14}[a-z0-9])?$/.test(canonicalUsername)) {
+      throw new Error("Neynar did not return a valid username for the authenticated Farcaster account.");
+    }
 
     const followerCount = Number(cast.author?.follower_count ?? cast.author?.followerCount ?? 0);
     const rewardWeight = followerWeight(followerCount);
@@ -58,14 +65,26 @@ export default async function handler(request: Request) {
     if (walletOwner?.fid && Number(walletOwner.fid) !== fid) throw new Error("This verified payout wallet is already linked to another MineCast miner.");
     let inviterFid: number | undefined;
     if (!existing?.inviter_fid && followerCount >= 100 && typeof referrerHandle === "string" && /^[a-z0-9][a-z0-9._]{0,15}$/i.test(referrerHandle)) {
-      const inviterResponse = await supabase(`miners?username=ilike.${encodeURIComponent(referrerHandle.trim())}&select=fid&limit=1`);
-      const [inviter] = await inviterResponse.json();
-      if (inviter?.fid && Number(inviter.fid) !== fid) inviterFid = Number(inviter.fid);
+      // Resolve the handle through Neynar first. Never let a browser value or a
+      // stale/spoofed database username decide which FID receives referrals.
+      const referrerResponse = await fetch(
+        `https://api.neynar.com/v2/farcaster/user/by_username?username=${encodeURIComponent(referrerHandle.trim().replace(/^@+/, ""))}`,
+        { headers: { "x-api-key": neynarKey } },
+      );
+      if (referrerResponse.ok) {
+        const referrerUser = (await referrerResponse.json()).user;
+        const verifiedReferrerFid = Number(referrerUser?.fid);
+        if (Number.isSafeInteger(verifiedReferrerFid) && verifiedReferrerFid > 0 && verifiedReferrerFid !== fid) {
+          const inviterResponse = await supabase(`miners?fid=eq.${verifiedReferrerFid}&select=fid&limit=1`);
+          const [inviter] = await inviterResponse.json();
+          if (Number(inviter?.fid) === verifiedReferrerFid) inviterFid = verifiedReferrerFid;
+        }
+      }
     }
     await supabase("miners?on_conflict=fid", {
       method: "POST",
       headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify({ fid, username: typeof username === "string" ? username : null, wallet_address: wallet, follower_count: followerCount, referral_code: referralCode, ...(inviterFid ? { inviter_fid: inviterFid } : {}) }),
+      body: JSON.stringify({ fid, username: canonicalUsername, wallet_address: wallet, follower_count: followerCount, referral_code: referralCode, ...(inviterFid ? { inviter_fid: inviterFid } : {}) }),
     });
     const active = await supabase(`mining_sessions?fid=eq.${fid}&settled_at=is.null&select=id`);
     if ((await active.json()).length) throw new Error("This miner already has an active session.");
