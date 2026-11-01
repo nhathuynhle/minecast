@@ -13,7 +13,7 @@ const claimedEventAbi = [{
   ],
 }] as const;
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "nodejs" };
 
 /** Marks a voucher allocation claimed only after the Base receipt proves it. */
 export default async function handler(request: Request) {

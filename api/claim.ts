@@ -5,7 +5,7 @@ import { requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend";
 
 // Types cho Vercel Edge/Serverless function
 export const config = {
-  runtime: "edge",
+  runtime: "nodejs",
 };
 
 export default async function handler(request: Request) {

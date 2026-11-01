@@ -18,7 +18,7 @@ function followerWeight(followers: number): bigint {
   return 1n;
 }
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "nodejs" };
 
 export default async function handler(request: Request) {
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
