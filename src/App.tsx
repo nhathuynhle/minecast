@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
+import { formatUnits } from "viem"
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch, type FarcasterIdentity } from "@/lib/farcaster"
 import {
   accrued,
@@ -48,7 +49,23 @@ import { executeClaimOnBase, type ClaimStatus } from "@/lib/web3-claim"
 import { TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "@/lib/contract"
 import { basescanUrl, readOnchainSnapshot, type OnchainSnapshot } from "@/lib/onchain"
 
-type Tab = "mine" | "invite" | "network" | "token"
+type Tab = "mine" | "invite" | "network" | "token" | "admin"
+
+type AdminDashboardData = {
+  generatedAt: string
+  metrics: {
+    miners: number
+    activeSessions: number
+    settledSessions: number
+    claimedAllocations: number
+    availableWei: string
+    voucherWei: string
+    claimedWei: string
+  }
+  miners: Array<{ fid: number; username: string | null; wallet_address: string | null; follower_count: number; created_at: string }>
+  sessions: Array<{ id: string; fid: number; wallet_address: string; reward_wei: string; reward_weight: string; started_at: string; ends_at: string; settled_at: string | null }>
+  claims: Array<{ id: string; fid: number; wallet_address: string; amount_wei: string; status: string; created_at: string }>
+}
 
 const STEPS = [
   {
@@ -158,12 +175,19 @@ export default function App() {
               <p className="text-sm text-gray-400">Cast once. Mine for 24 hours.</p>
             </div>
           </div>
-          <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">
-            Base
-          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setTab("admin")}
+              className="flex h-9 items-center gap-1.5 rounded-xl border border-gray-700 bg-[#141b26] px-3 text-sm font-semibold text-gray-200 transition hover:border-[#8a63d2] hover:text-white"
+            >
+              <ShieldCheck className="size-4 text-[#a78bfa]" /> Admin
+            </button>
+            <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">Base</p>
+          </div>
         </header>
 
-        <div className="mt-5 grid items-start gap-4 lg:grid-cols-5">
+        {tab === "admin" ? <AdminDashboard /> : <div className="mt-5 grid items-start gap-4 lg:grid-cols-5">
           <div className={`${tab === "mine" ? "" : "hidden lg:block"} lg:col-span-2`}>
             <MineCard
               handle={miner.handle}
@@ -231,15 +255,16 @@ export default function App() {
               />
             </div>
           </div>
-        </div>
+        </div>}
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-800 bg-[#0b0f17]/95 backdrop-blur lg:hidden">
-        <div className="mx-auto grid max-w-lg grid-cols-4">
+        <div className="mx-auto grid max-w-lg grid-cols-5">
           <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<Gem className="size-5" />} />
           <NavButton active={tab === "invite"} onClick={() => setTab("invite")} label="Squad" icon={<Users className="size-5" />} />
           <NavButton active={tab === "network"} onClick={() => setTab("network")} label="Network" icon={<Radio className="size-5" />} />
           <NavButton active={tab === "token"} onClick={() => setTab("token")} label="Token" icon={<Layers className="size-5" />} />
+          <NavButton active={tab === "admin"} onClick={() => setTab("admin")} label="Admin" icon={<ShieldCheck className="size-5" />} />
         </div>
       </nav>
 
@@ -977,6 +1002,101 @@ function TokenPanel({
       </button>
     </section>
   )
+}
+
+function dashboardTokens(wei: string): string {
+  try {
+    return formatTokens(Number(formatUnits(BigInt(wei), 18)))
+  } catch {
+    return "—"
+  }
+}
+
+function shortAddress(address: string | null): string {
+  if (!address) return "—"
+  return `${address.slice(0, 6)}…${address.slice(-4)}`
+}
+
+function AdminDashboard() {
+  const [data, setData] = useState<AdminDashboardData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState("")
+
+  async function refresh() {
+    setLoading(true)
+    setErrorMessage("")
+    try {
+      const response = await farcasterFetch("/api/admin/overview")
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.error || "Could not load the admin dashboard.")
+      setData(body as AdminDashboardData)
+    } catch (cause) {
+      setData(null)
+      setErrorMessage(cause instanceof Error ? cause.message : "Could not load the admin dashboard.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void refresh() }, [])
+
+  if (loading && !data) {
+    return <section className="mt-5 grid min-h-64 place-items-center rounded-2xl border border-gray-800 bg-[#141b26] text-sm text-gray-400"><span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" /> Loading private operations…</span></section>
+  }
+
+  if (errorMessage) {
+    return (
+      <section className="mt-5 rounded-2xl border border-red-500/30 bg-red-500/10 p-5" role="alert">
+        <h2 className="font-semibold text-red-200">Admin dashboard unavailable</h2>
+        <p className="mt-1 text-sm text-red-200/80">{errorMessage}</p>
+        <button type="button" onClick={() => void refresh()} className="mt-4 flex h-11 items-center gap-2 rounded-xl border border-red-400/40 px-4 text-sm font-semibold text-red-100"><RefreshCw className="size-4" /> Retry</button>
+      </section>
+    )
+  }
+
+  if (!data) return null
+  const cards = [
+    ["Miners", data.metrics.miners.toLocaleString(), "Verified Farcaster identities"],
+    ["Mining live", data.metrics.activeSessions.toLocaleString(), "Sessions not yet settled"],
+    ["Sessions settled", data.metrics.settledSessions.toLocaleString(), "Completed 24-hour sessions"],
+    ["Claims completed", data.metrics.claimedAllocations.toLocaleString(), "Onchain withdrawal records"],
+    ["Available to claim", `${dashboardTokens(data.metrics.availableWei)} ${TOKEN_SYMBOL}`, "Ledger allocation not yet claimed"],
+    ["Voucher reserved", `${dashboardTokens(data.metrics.voucherWei)} ${TOKEN_SYMBOL}`, "Awaiting wallet transaction"],
+    ["Claimed out", `${dashboardTokens(data.metrics.claimedWei)} ${TOKEN_SYMBOL}`, "Recorded completed withdrawals"],
+  ]
+
+  return (
+    <section className="mt-5 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-[#8a63d2]/40 bg-[#141b26] p-5">
+        <div>
+          <p className="flex items-center gap-2 text-sm font-semibold text-[#c4b5fd]"><ShieldCheck className="size-4" /> Private operations dashboard</p>
+          <h2 className="mt-1 text-xl font-bold text-white">MineCast inflow & outflow</h2>
+          <p className="mt-1 text-sm text-gray-400">Server-verified miner, session, allocation and claim ledger. Updated {formatAgo(Date.now() - Date.parse(data.generatedAt))}.</p>
+        </div>
+        <button type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading} className="flex h-11 items-center gap-2 rounded-xl bg-[#8a63d2] px-4 text-sm font-semibold text-white disabled:opacity-60"><RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} /> Refresh</button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {cards.map(([label, value, note]) => <div key={label} className="rounded-2xl border border-gray-800 bg-[#141b26] p-4"><p className="text-sm text-gray-400">{label}</p><p className="mt-2 truncate text-xl font-bold tabular-nums text-white">{value}</p><p className="mt-1 text-xs text-gray-500">{note}</p></div>)}
+      </div>
+
+      <AdminTable title="Latest miners" columns={["Miner", "Followers", "Payout wallet", "Joined"]}>
+        {data.miners.map((miner) => <tr key={miner.fid} className="border-t border-gray-800"><td className="px-3 py-3 font-medium text-white">@{miner.username || `fid-${miner.fid}`} <span className="text-xs font-normal text-gray-500">#{miner.fid}</span></td><td className="px-3 py-3">{Number(miner.follower_count || 0).toLocaleString()}</td><td className="px-3 py-3 font-mono text-xs">{shortAddress(miner.wallet_address)}</td><td className="px-3 py-3">{formatWhen(Date.parse(miner.created_at))}</td></tr>)}
+      </AdminTable>
+
+      <AdminTable title="Mining sessions" columns={["FID", "Reward weight", "Estimated reward", "Window", "State"]}>
+        {data.sessions.map((session) => <tr key={session.id} className="border-t border-gray-800"><td className="px-3 py-3 font-medium text-white">#{session.fid}</td><td className="px-3 py-3">{session.reward_weight}×</td><td className="px-3 py-3">{dashboardTokens(session.reward_wei)} {TOKEN_SYMBOL}</td><td className="px-3 py-3 text-xs">{formatWhen(Date.parse(session.started_at))}</td><td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${session.settled_at ? "bg-green-500/15 text-green-300" : "bg-amber-500/15 text-amber-200"}`}>{session.settled_at ? "Settled" : "Active"}</span></td></tr>)}
+      </AdminTable>
+
+      <AdminTable title="Token outflow / claims" columns={["FID", "Amount", "Wallet", "Status", "Created"]}>
+        {data.claims.map((claim) => <tr key={claim.id} className="border-t border-gray-800"><td className="px-3 py-3 font-medium text-white">#{claim.fid}</td><td className="px-3 py-3">{dashboardTokens(claim.amount_wei)} {TOKEN_SYMBOL}</td><td className="px-3 py-3 font-mono text-xs">{shortAddress(claim.wallet_address)}</td><td className="px-3 py-3"><span className="rounded-full bg-[#8a63d2]/20 px-2 py-1 text-xs font-semibold text-[#c4b5fd]">{claim.status.replace(/_/g, " ")}</span></td><td className="px-3 py-3 text-xs">{formatWhen(Date.parse(claim.created_at))}</td></tr>)}
+      </AdminTable>
+    </section>
+  )
+}
+
+function AdminTable({ title, columns, children }: { title: string; columns: string[]; children: ReactNode }) {
+  return <section className="overflow-hidden rounded-2xl border border-gray-800 bg-[#141b26]"><h3 className="border-b border-gray-800 px-4 py-4 font-semibold text-white">{title}</h3><div className="overflow-x-auto"><table className="w-full min-w-[640px] text-left text-sm text-gray-300"><thead className="bg-[#0b0f17] text-xs uppercase tracking-wide text-gray-500"><tr>{columns.map((column) => <th key={column} className="px-3 py-3 font-medium">{column}</th>)}</tr></thead><tbody>{children}</tbody></table></div></section>
 }
 
 function NavButton({

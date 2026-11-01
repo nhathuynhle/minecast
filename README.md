@@ -40,6 +40,13 @@ The mining UI can be previewed without a contract, but its browser `localStorage
 5. Configure `NEYNAR_API_KEY`. The API verifies Quick Auth JWTs against the signed production domain `minecast-beta.vercel.app`, verifies the cast's author via Neynar, enforces one active session per FID, and settles sessions atomically.
 6. Keep `localStorage`, a browser-submitted amount, and a typed handle out of eligibility decisions. They are UI convenience only, never claim proof.
 
+## Private operations dashboard
+
+The **Admin** tab is a server-protected operations dashboard for miner inflow, live and settled sessions, and allocation/claim outflow. It authenticates with Farcaster Quick Auth and is restricted by FID in the API route — hiding the tab is not the access control.
+
+- `MINECAST_ADMIN_FIDS` (optional): comma-separated operator FIDs. The current app-owner FID `3356898` is used as the safe default.
+- Set this variable in Vercel before adding another operator or moving ownership.
+
 ## Farcaster Mini App registration
 
 The app exposes its manifest at `https://minecast-beta.vercel.app/.well-known/farcaster.json`. The account association is public cryptographic metadata, so it is served as a static JSON file at `public/.well-known/farcaster.json`. Generate it in the Farcaster developer portal for the exact domain `minecast-beta.vercel.app` (no `https://`, no trailing slash), then replace the `header`, `payload`, and `signature` values in that file and redeploy.

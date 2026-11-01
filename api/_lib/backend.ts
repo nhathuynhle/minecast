@@ -67,6 +67,17 @@ export async function requireFarcasterUser(request: Request): Promise<number> {
   }
 }
 
+export function requireMineCastAdmin(fid: number): void {
+  // Keep the app owner's FID as a safe default for the current deployment, but
+  // allow multiple operators to be configured without a code release.
+  const configured = process.env.MINECAST_ADMIN_FIDS ?? "3356898";
+  const adminFids = configured
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isSafeInteger(value) && value > 0);
+  if (!adminFids.includes(fid)) throw new Error("Admin access is required.");
+}
+
 export function requireWallet(value: unknown): `0x${string}` {
   if (typeof value !== "string" || !isAddress(value)) throw new Error("A valid Base wallet address is required.");
   return value as `0x${string}`;
@@ -126,6 +137,7 @@ export function error(error: unknown): Response {
   if (/cloudflare|<!doctype|http request failed|timed? out|fetch failed|\b50[0234]\b/i.test(message)) {
     return json({ error: "Base RPC is temporarily unavailable. Please try again." }, 503);
   }
+  if (/admin access/i.test(message)) return json({ error: message }, 403);
   const status = /required|invalid|expired|does not belong|authenticate|verified.*wallet/i.test(message) ? 401
     : /already has|already linked|No settled|Daily claim|Claim your previous/i.test(message) ? 409
     : 500;
