@@ -1,4 +1,4 @@
-import { error, json, readEmissionSchedule, requireFarcasterUser, supabase } from "../_lib/backend";
+import { error, json, readEmissionSchedule, requireFarcasterUser, supabase } from "../_lib/backend.js";
 
 export const config = { runtime: "nodejs" };
 

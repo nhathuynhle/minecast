@@ -1,4 +1,4 @@
-import { error, json, readCurrentEra, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
+import { error, json, readCurrentEra, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend.js";
 
 const SESSION_SECONDS = 24 * 60 * 60;
 // UI estimate. The actual settlement divides the fixed daily budget across

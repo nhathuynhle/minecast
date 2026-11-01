@@ -1,6 +1,6 @@
 import { createPublicClient, getAddress, http, isAddress, parseEventLogs, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { error, json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
+import { error, json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend.js";
 
 const claimedEventAbi = [{
   type: "event",
