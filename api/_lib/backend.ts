@@ -119,7 +119,11 @@ export function requireMineCastAdminWallet(value: string): `0x${string}` {
   if (!isAddress(value)) throw new Error("A valid admin wallet is required.");
   const wallet = getAddress(value);
   const configured = process.env.MINECAST_ADMIN_WALLETS ?? "0x40537Ce355e3440d9d9855667Aa7546AB17Ce252";
-  const allowed = configured.split(",").filter(isAddress).map((address) => getAddress(address));
+  const allowed = configured
+    .split(",")
+    .map((address) => address.trim())
+    .filter((address): address is `0x${string}` => isAddress(address))
+    .map((address) => getAddress(address));
   if (!allowed.some((address) => address.toLowerCase() === wallet.toLowerCase())) {
     throw new Error("Admin wallet access is required.");
   }
@@ -156,7 +160,7 @@ export async function requireOpsSession(request: Request): Promise<`0x${string}`
   if (!payload || !signature || !(await validOpsHmac(`session:${payload}`, signature))) throw new Error("Invalid admin session.");
   try {
     const parsed = JSON.parse(new TextDecoder().decode(base64UrlBytes(payload))) as { wallet?: string; exp?: number };
-    if (!parsed.wallet || !Number.isSafeInteger(parsed.exp) || parsed.exp < Date.now()) throw new Error("expired");
+    if (!parsed.wallet || typeof parsed.exp !== "number" || !Number.isSafeInteger(parsed.exp) || parsed.exp < Date.now()) throw new Error("expired");
     return requireMineCastAdminWallet(parsed.wallet);
   } catch {
     throw new Error("Admin session has expired.");
