@@ -27,6 +27,7 @@ This folder contains the onchain design agreed for mainnet review. It does **not
 - `MineCastMonthlyGovernance.sol`: only two Yes/No proposal kinds per 30-day epoch: a Merkle-root community airdrop and a Treasury burn. Airdrop proposals require a valid 3-of-5 snapshot signature bundle and the immutable policy hash. It deliberately has no generic arbitrary-call proposal.
 - `MineCastCommunityTreasury`: can only fund a passed airdrop or burn its own TOKENCAST after bootstrap is permanently locked.
 - `MineCastAirdropDistributor`: holds a passed Merkle round, lets each wallet claim once, and sweeps expiry leftovers back to the Treasury.
+- `MineCastStaking.sol`: a signer-free staking-reward engine. TOKENCAST is locked for 30 days; a permissionless transaction records the stake snapshot in the first day of each 30-day epoch. Rewards are pro-rata from that block snapshot, and expired rewards roll into a later staker epoch rather than to an operator wallet.
 
 ## Required deployment order
 
@@ -40,6 +41,16 @@ This folder contains the onchain design agreed for mainnet review. It does **not
 8. Call `treasury.setGovernance(governance)`, then `treasury.lockGovernance()` once. This permanently removes its bootstrap admin.
 9. Deploy and audit the daily Merkle mining distributor, grant it `MINTER_ROLE` on `TokenCastV3`, then have the bootstrap admin renounce `DEFAULT_ADMIN_ROLE`.
 10. Verify every contract source and publish the deployment transaction plan before mainnet.
+
+## Staker rewards
+
+Staker rewards are deliberately separate from Farcaster airdrops. They need no Farcaster snapshot, backend, Merkle root or 3-of-5 signature because stake balances and reward claims are entirely onchain.
+
+1. Anyone stakes TOKENCAST; each deposit extends that wallet's lock to at least 30 days from its newest deposit.
+2. Anyone calls `snapshotEpoch` in the first 24 hours of a 30-day epoch. Deposits after that block are ineligible until a later epoch.
+3. Anyone can donate TOKENCAST to the snapshotted epoch during that epoch. This is the temporary permissionless funding route; a later audited Treasury-governance integration can fund the same function without changing the accounting rules.
+4. After the epoch closes, anyone finalizes it. A wallet claims its exact pro-rata share from the stored stake checkpoint during the following 90 days.
+5. Expired unclaimed rewards can only roll into future staker reward rounds.
 
 ## Governance lifecycle
 
