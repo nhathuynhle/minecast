@@ -62,6 +62,7 @@ export default async function handler(request: Request) {
       requireMineCastAdmin(fid);
     }
 
+    const trendSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const [minerCountResponse, activeCountResponse, completedCountResponse, claimedCountResponse, minersResponse, sessionsResponse, claimsResponse, allocationsResponse, trendSessionsResponse, trendClaimsResponse] = await Promise.all([
       supabase("miners?select=fid", { method: "HEAD", headers: { Prefer: "count=exact" } }),
       supabase("mining_sessions?settled_at=is.null&select=id", { method: "HEAD", headers: { Prefer: "count=exact" } }),
@@ -71,8 +72,8 @@ export default async function handler(request: Request) {
       supabase("mining_sessions?select=id,fid,wallet_address,reward_wei,reward_weight,started_at,ends_at,settled_at&order=started_at.desc&limit=12"),
       supabase("claim_allocations?select=id,fid,wallet_address,amount_wei,status,created_at&order=created_at.desc&limit=12"),
       supabase("claim_allocations?select=amount_wei,status&limit=5000"),
-      supabase("mining_sessions?select=started_at,reward_wei,settled_at&started_at=gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}&order=started_at.asc&limit=5000"),
-      supabase("claim_allocations?select=created_at,amount_wei,status&created_at=gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}&order=created_at.asc&limit=5000"),
+      supabase(`mining_sessions?select=started_at,reward_wei,settled_at&started_at=gte.${trendSince}&order=started_at.asc&limit=5000`),
+      supabase(`claim_allocations?select=created_at,amount_wei,status&created_at=gte.${trendSince}&order=created_at.asc&limit=5000`),
     ]);
 
     const [miners, sessions, claims, allocations, trendSessions, trendClaims] = await Promise.all([
