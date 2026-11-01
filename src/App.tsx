@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
-import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
+import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck, Vote } from "lucide-react"
 import { formatUnits } from "viem"
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch, type FarcasterIdentity } from "@/lib/farcaster"
 import {
@@ -48,8 +48,9 @@ import {
 import { executeClaimOnBase, type ClaimStatus } from "@/lib/web3-claim"
 import { TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "@/lib/contract"
 import { basescanUrl, readOnchainSnapshot, type OnchainSnapshot } from "@/lib/onchain"
+import { DAO_IS_DEPLOYED, castDaoVote, readDaoProposals, type DaoProposal } from "@/lib/governance"
 
-type Tab = "mine" | "invite" | "network" | "token" | "admin"
+type Tab = "mine" | "invite" | "network" | "token" | "dao" | "admin"
 
 type AdminDashboardData = {
   generatedAt: string
@@ -175,7 +176,12 @@ export default function App() {
               <p className="text-sm text-gray-400">Cast once. Mine for 24 hours.</p>
             </div>
           </div>
-          <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-1.5 text-sm font-semibold text-[#a78bfa]">Base</p>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setTab("dao")} className="flex h-10 items-center gap-2 rounded-xl border border-[#8a63d2]/40 px-3 text-sm font-semibold text-[#c4b5fd] hover:bg-[#8a63d2]/10">
+              <Vote className="size-4" /> DAO
+            </button>
+            <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-2 text-sm font-semibold text-[#a78bfa]">Base</p>
+          </div>
         </header>
 
         <div className="mt-5 grid items-start gap-4 lg:grid-cols-5">
@@ -226,7 +232,7 @@ export default function App() {
                 />
               </div>
             ) : null}
-            <div className={tab === "token" || tab === "invite" ? "hidden lg:block" : ""}>
+            <div className={tab === "token" || tab === "invite" || tab === "dao" ? "hidden lg:block" : ""}>
               <NetworkPanel
                 now={now}
                 mined={networkMined}
@@ -236,7 +242,7 @@ export default function App() {
                 castAt={session?.startedAt ?? null}
               />
             </div>
-            <div className={tab === "network" || tab === "invite" ? "hidden lg:block" : ""}>
+            <div className={tab === "network" || tab === "invite" || tab === "dao" ? "hidden lg:block" : ""}>
               <TokenPanel
                 balance={shownBalance}
                 payout={miner.payout}
@@ -245,16 +251,18 @@ export default function App() {
                 reward={quote.reward}
               />
             </div>
+            {tab === "dao" ? <DaoPanel /> : null}
           </div>
         </div>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-800 bg-[#0b0f17]/95 backdrop-blur lg:hidden">
-        <div className="mx-auto grid max-w-lg grid-cols-4">
+        <div className="mx-auto grid max-w-lg grid-cols-5">
           <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<Gem className="size-5" />} />
           <NavButton active={tab === "invite"} onClick={() => setTab("invite")} label="Squad" icon={<Users className="size-5" />} />
           <NavButton active={tab === "network"} onClick={() => setTab("network")} label="Network" icon={<Radio className="size-5" />} />
           <NavButton active={tab === "token"} onClick={() => setTab("token")} label="Token" icon={<Layers className="size-5" />} />
+          <NavButton active={tab === "dao"} onClick={() => setTab("dao")} label="DAO" icon={<Vote className="size-5" />} />
         </div>
       </nav>
 
@@ -990,6 +998,114 @@ function TokenPanel({
       >
         {copied ? "Copied Spec" : "Copy Tokenomics Spec"}
       </button>
+    </section>
+  )
+}
+
+function DaoPanel() {
+  const [epoch, setEpoch] = useState<number | null>(null)
+  const [proposals, setProposals] = useState<DaoProposal[]>([])
+  const [loading, setLoading] = useState(false)
+  const [votingId, setVotingId] = useState<bigint | null>(null)
+  const [message, setMessage] = useState("")
+
+  async function refresh() {
+    if (!DAO_IS_DEPLOYED) return
+    setLoading(true)
+    setMessage("")
+    try {
+      const next = await readDaoProposals()
+      setEpoch(next.epoch)
+      setProposals(next.proposals)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not read DAO proposals from Base.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void refresh() }, [])
+
+  async function vote(proposal: DaoProposal, support: boolean) {
+    setVotingId(proposal.id)
+    setMessage("")
+    try {
+      const hash = await castDaoVote(proposal.id, support)
+      setMessage(`Vote confirmed on Base: ${hash.slice(0, 10)}…${hash.slice(-8)}`)
+      await refresh()
+    } catch (error: any) {
+      if (error?.code !== 4001 && !/user rejected|user denied/i.test(String(error?.message ?? ""))) {
+        setMessage(error?.message || "Vote could not be submitted.")
+      }
+    } finally {
+      setVotingId(null)
+    }
+  }
+
+  return (
+    <section className="rounded-2xl border border-[#8a63d2]/40 bg-[#141b26] p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="flex items-center gap-2 text-sm font-semibold text-[#c4b5fd]"><Vote className="size-4" /> Community governance</p>
+          <h2 className="mt-1 text-xl font-bold text-white">MineCast DAO</h2>
+          <p className="mt-1 text-sm text-gray-400">TOKENCAST holders vote Yes or No using delegated balance at the proposal snapshot.</p>
+        </div>
+        <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${DAO_IS_DEPLOYED ? "bg-green-500/15 text-green-300" : "bg-amber-500/15 text-amber-200"}`}>
+          {DAO_IS_DEPLOYED ? "V3 live" : "V3 pending"}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
+          <p className="text-sm text-gray-400">Community airdrop</p>
+          <p className="mt-1 font-semibold text-white">Max 10% monthly emission</p>
+          <p className="mt-1 text-xs text-gray-500">Requires immutable policy, public snapshot and 3-of-5 signer attestation.</p>
+        </div>
+        <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
+          <p className="text-sm text-gray-400">Treasury burn</p>
+          <p className="mt-1 font-semibold text-white">Max 5% monthly emission</p>
+          <p className="mt-1 text-xs text-gray-500">Can only burn TOKENCAST held by the Community Treasury.</p>
+        </div>
+      </div>
+
+      {!DAO_IS_DEPLOYED ? (
+        <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <p className="font-semibold text-amber-100">Voting opens after V3 deployment</p>
+          <p className="mt-1 text-sm text-amber-100/80">This is intentionally not a fake vote button. After the V3 governance address is configured, this tab reads proposals and submits Base transactions through your Farcaster wallet.</p>
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-gray-400">{epoch === null ? "Loading epoch…" : `Epoch ${epoch}`}</p>
+            <button type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading} className="flex h-10 items-center gap-2 rounded-xl border border-gray-700 px-3 text-sm font-semibold text-gray-200 disabled:opacity-60">
+              <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+            </button>
+          </div>
+
+          <div className="mt-3 grid gap-3">
+            {proposals.length === 0 ? <p className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4 text-sm text-gray-400">No active or current-epoch DAO proposal.</p> : null}
+            {proposals.map((proposal) => (
+              <article key={proposal.id.toString()} className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-white">{proposal.kind}</p>
+                    <p className="mt-1 text-sm text-gray-400">Epoch {proposal.epoch} · {formatTokens(Number(proposal.amount))} {TOKEN_SYMBOL}</p>
+                  </div>
+                  <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${proposal.active ? "bg-green-500/15 text-green-300" : "bg-gray-700 text-gray-300"}`}>{proposal.active ? "Voting open" : "Voting closed"}</span>
+                </div>
+                <p className="mt-3 text-xs text-gray-500">Yes {formatTokens(Number(proposal.yesVotes))} · No {formatTokens(Number(proposal.noVotes))} · ends at Base block {proposal.deadlineBlock.toString()}</p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => void vote(proposal, true)} disabled={!proposal.active || votingId !== null || proposal.voted} className="h-11 rounded-xl bg-green-500/80 text-sm font-semibold text-white disabled:opacity-50">{votingId === proposal.id ? "Confirm in wallet…" : proposal.voted ? "Already voted" : "Vote Yes"}</button>
+                  <button type="button" onClick={() => void vote(proposal, false)} disabled={!proposal.active || votingId !== null || proposal.voted} className="h-11 rounded-xl bg-red-500/80 text-sm font-semibold text-white disabled:opacity-50">Vote No</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+
+      {message ? <p role="alert" className="mt-4 rounded-xl bg-[#8a63d2]/15 px-3 py-2 text-sm text-[#ddd6fe]">{message}</p> : null}
+      <p className="mt-4 text-xs text-gray-500">Delegation is required for voting power. V3 uses a 5% quorum, 7-day vote window and 72-hour execution delay.</p>
     </section>
   )
 }

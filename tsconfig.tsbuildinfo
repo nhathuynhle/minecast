@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/ops.tsx","./src/vite-env.d.ts","./src/lib/contract.ts","./src/lib/farcaster.ts","./src/lib/miner-store.ts","./src/lib/onchain.ts","./src/lib/tokenomics.ts","./src/lib/web3-claim.ts"],"version":"5.8.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/ops.tsx","./src/vite-env.d.ts","./src/lib/contract.ts","./src/lib/farcaster.ts","./src/lib/governance.ts","./src/lib/miner-store.ts","./src/lib/onchain.ts","./src/lib/tokenomics.ts","./src/lib/web3-claim.ts"],"version":"5.8.3"}
