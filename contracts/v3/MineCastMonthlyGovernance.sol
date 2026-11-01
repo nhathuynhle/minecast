@@ -19,6 +19,22 @@ interface IMineCastAirdropSnapshotAttestor {
     ) external view;
 }
 
+/// @dev Minimal Gregorian UTC conversion for calendar-governed proposal windows.
+library MineCastCalendar {
+    function yearMonthDay(uint256 timestamp) internal pure returns (uint256 year, uint256 month, uint256 day) {
+        int256 l = int256(timestamp / 1 days) + 68569 + 2440588;
+        int256 n = 4 * l / 146097;
+        l = l - (146097 * n + 3) / 4;
+        int256 i = 4000 * (l + 1) / 1461001;
+        l = l - 1461 * i / 4 + 31;
+        int256 j = 80 * l / 2447;
+        day = uint256(l - 2447 * j / 80);
+        l = j / 11;
+        month = uint256(j + 2 - 12 * l);
+        year = uint256(100 * (n - 49) + i + l);
+    }
+}
+
 /// @notice Token interface required by MineCast's constrained monthly DAO.
 /// @dev TokenCast V3 must implement ERC20Votes and expose its immutable emission schedule.
 interface ITokenCastVotes is IERC20, IVotes {
@@ -202,13 +218,14 @@ contract MineCastCommunityTreasury {
 }
 
 /// @notice A constrained, non-upgradeable TOKENCAST governance engine.
-/// @dev It intentionally supports only two yes/no actions per 30-day epoch: airdrop and burn.
+/// @dev It intentionally supports only two yes/no actions each calendar month: airdrop on the 1st and burn on the 15th UTC.
 contract MineCastMonthlyGovernance {
     enum ProposalKind { Airdrop, Burn }
 
     struct Proposal {
         ProposalKind kind;
         uint64 epoch;
+        uint32 calendarMonth;
         uint64 snapshotBlock;
         uint64 deadlineBlock;
         uint64 executeAfter;
@@ -238,18 +255,16 @@ contract MineCastMonthlyGovernance {
     uint64 public immutable launchTime;
     bytes32 public immutable airdropPolicyHash;
     uint256 public nextProposalId = 1;
-    mapping(uint256 proposalId => Proposal) public proposals;
-    mapping(uint256 epoch => mapping(ProposalKind kind => uint256 proposalId)) public proposalForEpoch;
+    mapping(uint256 proposalId => Proposal) private _proposals;
+    mapping(uint256 calendarMonth => mapping(ProposalKind kind => uint256 proposalId)) public proposalForMonth;
     mapping(uint256 proposalId => mapping(address voter => bool)) public hasVoted;
 
     event ProposalCreated(
         uint256 indexed proposalId,
         ProposalKind indexed kind,
         uint256 indexed epoch,
-        uint256 amount,
-        bytes32 merkleRoot,
-        bytes32 policyHash,
-        bytes32 snapshotHash
+        uint256 calendarMonth,
+        uint256 amount
     );
     event VoteCast(uint256 indexed proposalId, address indexed voter, bool support, uint256 weight);
     event ProposalQueued(uint256 indexed proposalId, uint256 executeAfter);
@@ -267,6 +282,7 @@ contract MineCastMonthlyGovernance {
     error InvalidAirdropConfiguration();
     error TreasuryBalanceTooLow();
     error NotLaunched();
+    error ProposalWindowClosed();
 
     constructor(
         ITokenCastVotes token_,
@@ -292,6 +308,61 @@ contract MineCastMonthlyGovernance {
         return (block.timestamp - launchTime) / EPOCH_LENGTH;
     }
 
+    /// @notice Calendar month identifier in UTC, e.g. 202611 for November 2026.
+    function currentCalendarMonth() public view returns (uint256) {
+        (uint256 year, uint256 month,) = MineCastCalendar.yearMonthDay(block.timestamp);
+        return year * 100 + month;
+    }
+
+    /// @notice The only two proposal-creation dates: community airdrop on day 1, burn on day 15 UTC.
+    function proposalWindowOpen(ProposalKind kind) public view returns (bool) {
+        (,, uint256 day) = MineCastCalendar.yearMonthDay(block.timestamp);
+        return day == (kind == ProposalKind.Airdrop ? 1 : 15);
+    }
+
+    function proposalInfo(uint256 proposalId)
+        external
+        view
+        returns (
+            ProposalKind kind,
+            uint64 epoch,
+            uint32 calendarMonth,
+            uint64 snapshotBlock,
+            uint64 deadlineBlock,
+            uint64 executeAfter,
+            uint32 claimDuration,
+            bool executed
+        )
+    {
+        Proposal storage proposal = _proposals[proposalId];
+        return (
+            proposal.kind,
+            proposal.epoch,
+            proposal.calendarMonth,
+            proposal.snapshotBlock,
+            proposal.deadlineBlock,
+            proposal.executeAfter,
+            proposal.claimDuration,
+            proposal.executed
+        );
+    }
+
+    function proposalVotes(uint256 proposalId) external view returns (uint256 amount, uint256 yesVotes, uint256 noVotes) {
+        Proposal storage proposal = _proposals[proposalId];
+        return (proposal.amount, proposal.yesVotes, proposal.noVotes);
+    }
+
+    /// @notice Publicly exposes the committed data for an airdrop proposal.
+    /// @dev This keeps the Merkle root and attested policy independently verifiable without a large auto-generated getter.
+    function proposalAirdropData(uint256 proposalId)
+        external
+        view
+        returns (bytes32 merkleRoot, bytes32 policyHash, bytes32 snapshotHash, uint32 claimDuration)
+    {
+        Proposal storage proposal = _proposals[proposalId];
+        return (proposal.merkleRoot, proposal.policyHash, proposal.snapshotHash, proposal.claimDuration);
+    }
+
     function createAirdropProposal(
         bytes32 merkleRoot,
         bytes32 snapshotHash,
@@ -313,7 +384,7 @@ contract MineCastMonthlyGovernance {
     }
 
     function castVote(uint256 proposalId, bool support) external returns (uint256 weight) {
-        Proposal storage proposal = proposals[proposalId];
+        Proposal storage proposal = _proposals[proposalId];
         if (proposal.snapshotBlock == 0 || block.number <= proposal.snapshotBlock || block.number > proposal.deadlineBlock) revert VotingNotActive();
         if (hasVoted[proposalId][msg.sender]) revert AlreadyVoted();
 
@@ -325,7 +396,7 @@ contract MineCastMonthlyGovernance {
     }
 
     function state(uint256 proposalId) public view returns (bool passed, bool executable) {
-        Proposal storage proposal = proposals[proposalId];
+        Proposal storage proposal = _proposals[proposalId];
         if (proposal.snapshotBlock == 0) return (false, false);
         uint256 quorum = token.getPastTotalSupply(proposal.snapshotBlock) * QUORUM_BPS / BPS_DENOMINATOR;
         passed = block.number > proposal.deadlineBlock && proposal.yesVotes > proposal.noVotes && proposal.yesVotes + proposal.noVotes >= quorum;
@@ -334,7 +405,7 @@ contract MineCastMonthlyGovernance {
 
     /// @notice Starts the public 72-hour delay only after a proposal has passed.
     function queue(uint256 proposalId) external {
-        Proposal storage proposal = proposals[proposalId];
+        Proposal storage proposal = _proposals[proposalId];
         if (proposal.snapshotBlock == 0) revert InvalidProposal();
         if (proposal.executed || proposal.executeAfter != 0) revert AlreadyExecuted();
         (bool passed,) = state(proposalId);
@@ -345,7 +416,7 @@ contract MineCastMonthlyGovernance {
     }
 
     function execute(uint256 proposalId) external returns (uint256 roundId) {
-        Proposal storage proposal = proposals[proposalId];
+        Proposal storage proposal = _proposals[proposalId];
         if (proposal.snapshotBlock == 0) revert InvalidProposal();
         if (proposal.executed) revert AlreadyExecuted();
         (bool passed, bool executable) = state(proposalId);
@@ -371,8 +442,10 @@ contract MineCastMonthlyGovernance {
         uint32 claimDuration
     ) internal returns (uint256 proposalId) {
         if (block.timestamp < launchTime) revert NotLaunched();
+        if (!proposalWindowOpen(kind)) revert ProposalWindowClosed();
         uint256 epoch = currentEpoch();
-        if (proposalForEpoch[epoch][kind] != 0) revert ProposalExists();
+        uint256 calendarMonth = currentCalendarMonth();
+        if (proposalForMonth[calendarMonth][kind] != 0) revert ProposalExists();
 
         _requireProposalThreshold(msg.sender);
         uint256 amount = _proposalAmount(kind, epoch);
@@ -380,9 +453,10 @@ contract MineCastMonthlyGovernance {
         proposalId = nextProposalId++;
         uint64 snapshotBlock = uint64(block.number + VOTING_DELAY_BLOCKS);
         uint64 deadlineBlock = uint64(uint256(snapshotBlock) + VOTING_PERIOD_BLOCKS);
-        Proposal storage proposal = proposals[proposalId];
+        Proposal storage proposal = _proposals[proposalId];
         proposal.kind = kind;
         proposal.epoch = uint64(epoch);
+        proposal.calendarMonth = uint32(calendarMonth);
         proposal.snapshotBlock = snapshotBlock;
         proposal.deadlineBlock = deadlineBlock;
         proposal.executeAfter = 0;
@@ -391,8 +465,8 @@ contract MineCastMonthlyGovernance {
         proposal.policyHash = policyHash;
         proposal.snapshotHash = snapshotHash;
         proposal.amount = amount;
-        proposalForEpoch[epoch][kind] = proposalId;
-        emit ProposalCreated(proposalId, kind, epoch, amount, merkleRoot, policyHash, snapshotHash);
+        proposalForMonth[calendarMonth][kind] = proposalId;
+        emit ProposalCreated(proposalId, kind, epoch, calendarMonth, amount);
     }
 
     function _requireProposalThreshold(address proposer) private view {

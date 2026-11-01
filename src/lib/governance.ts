@@ -16,17 +16,20 @@ const chain = DAO_CHAIN_ID === baseSepolia.id ? baseSepolia : base
 const publicClient = createPublicClient({ chain, transport: http() })
 
 const GOVERNANCE_ABI = [
-  { type: "function", name: "currentEpoch", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "currentCalendarMonth", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
   {
-    type: "function", name: "proposalForEpoch", stateMutability: "view",
+    type: "function", name: "proposalForMonth", stateMutability: "view",
     inputs: [{ type: "uint256" }, { type: "uint8" }], outputs: [{ type: "uint256" }],
   },
   {
-    type: "function", name: "proposals", stateMutability: "view", inputs: [{ type: "uint256" }],
+    type: "function", name: "proposalInfo", stateMutability: "view", inputs: [{ type: "uint256" }],
     outputs: [
-      { type: "uint8" }, { type: "uint64" }, { type: "uint64" }, { type: "uint64" }, { type: "uint64" }, { type: "uint32" },
-      { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "bool" },
+      { type: "uint8" }, { type: "uint64" }, { type: "uint32" }, { type: "uint64" }, { type: "uint64" }, { type: "uint64" }, { type: "uint32" }, { type: "bool" },
     ],
+  },
+  {
+    type: "function", name: "proposalVotes", stateMutability: "view", inputs: [{ type: "uint256" }],
+    outputs: [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
   },
   {
     type: "function", name: "hasVoted", stateMutability: "view",
@@ -42,6 +45,7 @@ export type DaoProposal = {
   id: bigint
   kind: "Community airdrop" | "Treasury burn"
   epoch: number
+  calendarMonth: number
   amount: string
   yesVotes: string
   noVotes: string
@@ -53,21 +57,24 @@ export type DaoProposal = {
 
 export async function readDaoProposals(account?: `0x${string}`): Promise<{ epoch: number; proposals: DaoProposal[] }> {
   if (!DAO_IS_DEPLOYED) return { epoch: 0, proposals: [] }
-  const [epochRaw, blockNumber] = await Promise.all([
-    publicClient.readContract({ address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "currentEpoch" }),
+  const [calendarMonthRaw, blockNumber] = await Promise.all([
+    publicClient.readContract({ address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "currentCalendarMonth" }),
     publicClient.getBlockNumber(),
   ])
-  const epoch = Number(epochRaw)
-  const epochs = epoch > 0 ? [epoch, epoch - 1] : [epoch]
+  const calendarMonth = Number(calendarMonthRaw)
   const ids = (await Promise.all(
-    epochs.flatMap((candidate) => [0, 1].map((kind) => publicClient.readContract({
-      address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "proposalForEpoch", args: [BigInt(candidate), kind],
-    }))),
+    [0, 1].map((kind) => publicClient.readContract({
+      address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "proposalForMonth", args: [BigInt(calendarMonth), kind],
+    })),
   )).filter((id) => id !== 0n)
 
   const proposals = await Promise.all(ids.map(async (id) => {
-    const raw = await publicClient.readContract({ address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "proposals", args: [id] })
-    const proposal = raw as unknown as readonly [number, bigint, bigint, bigint, bigint, number, string, string, string, bigint, bigint, bigint, boolean]
+    const [rawInfo, rawVotes] = await Promise.all([
+      publicClient.readContract({ address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "proposalInfo", args: [id] }),
+      publicClient.readContract({ address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "proposalVotes", args: [id] }),
+    ])
+    const proposal = rawInfo as unknown as readonly [number, bigint, number, bigint, bigint, bigint, number, boolean]
+    const votes = rawVotes as unknown as readonly [bigint, bigint, bigint]
     const voted = account
       ? await publicClient.readContract({ address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "hasVoted", args: [id, account] })
       : false
@@ -75,16 +82,17 @@ export async function readDaoProposals(account?: `0x${string}`): Promise<{ epoch
       id,
       kind: proposal[0] === 0 ? "Community airdrop" : "Treasury burn",
       epoch: Number(proposal[1]),
-      amount: formatUnits(proposal[9], 18),
-      yesVotes: formatUnits(proposal[10], 18),
-      noVotes: formatUnits(proposal[11], 18),
-      snapshotBlock: proposal[2],
-      deadlineBlock: proposal[3],
-      active: blockNumber > proposal[2] && blockNumber <= proposal[3],
+      calendarMonth: Number(proposal[2]),
+      amount: formatUnits(votes[0], 18),
+      yesVotes: formatUnits(votes[1], 18),
+      noVotes: formatUnits(votes[2], 18),
+      snapshotBlock: proposal[3],
+      deadlineBlock: proposal[4],
+      active: blockNumber > proposal[3] && blockNumber <= proposal[4],
       voted,
     } satisfies DaoProposal
   }))
-  return { epoch, proposals }
+  return { epoch: calendarMonth, proposals }
 }
 
 export async function castDaoVote(proposalId: bigint, support: boolean): Promise<`0x${string}`> {

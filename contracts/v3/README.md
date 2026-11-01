@@ -8,7 +8,7 @@ This folder contains the onchain design agreed for mainnet review. It does **not
 | --- | --- |
 | Maximum cumulative issuance | 21,000,000,000 TOKENCAST |
 | Mining schedule | 272-day halving eras |
-| Governance epoch | 30 days |
+| Governance proposal schedule | Airdrop: day 1 UTC; burn: day 15 UTC |
 | Community airdrop vote | At most 10% of that epoch's scheduled emission |
 | Treasury burn vote | At most 5% of that epoch's scheduled emission |
 | Proposal threshold | 0.25% of snapshot supply |
@@ -24,7 +24,7 @@ This folder contains the onchain design agreed for mainnet review. It does **not
 
 - `TokenCastV3.sol`: non-upgradeable ERC20Votes token. Its immutable calendar schedule controls every issuance. `cumulativeMinted` never falls when tokens burn, so burning cannot reopen minting capacity.
 - `MineCastAirdropSnapshotAttestor.sol`: validates an EIP-712 signature bundle from at least three of five immutable, independent snapshot wallets. The exact epoch, recipient Merkle root, policy hash, public snapshot hash, amount and claim duration are signed together.
-- `MineCastMonthlyGovernance.sol`: only two Yes/No proposal kinds per 30-day epoch: a Merkle-root community airdrop and a Treasury burn. Airdrop proposals require a valid 3-of-5 snapshot signature bundle and the immutable policy hash. It deliberately has no generic arbitrary-call proposal.
+- `MineCastMonthlyGovernance.sol`: only two Yes/No proposal types each UTC calendar month: a Merkle-root community airdrop created on day 1, and a Treasury burn created on day 15. Airdrop proposals require a valid 3-of-5 snapshot signature bundle and the immutable policy hash. It deliberately has no generic arbitrary-call proposal.
 - `MineCastCommunityTreasury`: can only fund a passed airdrop or burn its own TOKENCAST after bootstrap is permanently locked.
 - `MineCastAirdropDistributor`: holds a passed Merkle round, lets each wallet claim once, and sweeps expiry leftovers back to the Treasury.
 - `MineCastStaking.sol`: a signer-free staking-reward engine. TOKENCAST is locked for 30 days; a permissionless transaction records the stake snapshot in the first day of each 30-day epoch. Rewards are pro-rata from that block snapshot, and expired rewards roll into a later staker epoch rather than to an operator wallet.
@@ -54,7 +54,7 @@ Staker rewards are deliberately separate from Farcaster airdrops. They need no F
 
 ## Governance lifecycle
 
-1. For an airdrop, independent indexers produce the same public IPFS snapshot and three of five sign its exact policy hash, Merkle root, amount and claim duration. A self-delegated TOKENCAST holder above the threshold submits that signed bundle. A burn proposal needs no snapshot.
+1. On day 1 UTC, independent indexers produce the same public IPFS snapshot and three of five sign its exact policy hash, Merkle root, amount and claim duration. A self-delegated TOKENCAST holder above the threshold submits that airdrop bundle. On day 15 UTC, an eligible holder may submit the burn proposal; it needs no snapshot.
 2. Voting power is read at a future checkpoint block. Token buyers after that checkpoint cannot influence the proposal.
 3. A proposal must meet 5% quorum and have more Yes than No votes.
 4. Anyone queues a passed proposal; this starts the 72-hour timelock.

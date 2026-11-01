@@ -1059,12 +1059,12 @@ function DaoPanel() {
         <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
           <p className="text-sm text-gray-400">Community airdrop</p>
           <p className="mt-1 font-semibold text-white">Max 10% monthly emission</p>
-          <p className="mt-1 text-xs text-gray-500">Requires immutable policy, public snapshot and 3-of-5 signer attestation.</p>
+          <p className="mt-1 text-xs text-gray-500">Proposal opens on the 1st UTC; requires immutable policy, public snapshot and 3-of-5 signer attestation.</p>
         </div>
         <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
           <p className="text-sm text-gray-400">Treasury burn</p>
           <p className="mt-1 font-semibold text-white">Max 5% monthly emission</p>
-          <p className="mt-1 text-xs text-gray-500">Can only burn TOKENCAST held by the Community Treasury.</p>
+          <p className="mt-1 text-xs text-gray-500">Proposal opens on the 15th UTC; can only burn Community Treasury TOKENCAST.</p>
         </div>
       </div>
 
@@ -1076,7 +1076,7 @@ function DaoPanel() {
       ) : (
         <>
           <div className="mt-4 flex items-center justify-between gap-3">
-            <p className="text-sm text-gray-400">{epoch === null ? "Loading epoch…" : `Epoch ${epoch}`}</p>
+            <p className="text-sm text-gray-400">{epoch === null ? "Loading schedule…" : `UTC schedule · ${String(epoch).slice(0, 4)}-${String(epoch).slice(-2)}`}</p>
             <button type="button" onClick={() => void refresh()} disabled={loading} aria-busy={loading} className="flex h-10 items-center gap-2 rounded-xl border border-gray-700 px-3 text-sm font-semibold text-gray-200 disabled:opacity-60">
               <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} /> Refresh
             </button>
@@ -1089,7 +1089,7 @@ function DaoPanel() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold text-white">{proposal.kind}</p>
-                    <p className="mt-1 text-sm text-gray-400">Epoch {proposal.epoch} · {formatTokens(Number(proposal.amount))} {TOKEN_SYMBOL}</p>
+                    <p className="mt-1 text-sm text-gray-400">{String(proposal.calendarMonth).slice(0, 4)}-{String(proposal.calendarMonth).slice(-2)} · {formatTokens(Number(proposal.amount))} {TOKEN_SYMBOL}</p>
                   </div>
                   <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${proposal.active ? "bg-green-500/15 text-green-300" : "bg-gray-700 text-gray-300"}`}>{proposal.active ? "Voting open" : "Voting closed"}</span>
                 </div>
@@ -1105,7 +1105,7 @@ function DaoPanel() {
       )}
 
       {message ? <p role="alert" className="mt-4 rounded-xl bg-[#8a63d2]/15 px-3 py-2 text-sm text-[#ddd6fe]">{message}</p> : null}
-      <p className="mt-4 text-xs text-gray-500">Delegation is required for voting power. V3 uses a 5% quorum, 7-day vote window and 72-hour execution delay.</p>
+      <p className="mt-4 text-xs text-gray-500">Schedule: airdrop proposal on day 1 UTC, burn proposal on day 15 UTC. Delegation is required; votes run 7 days, with 5% quorum and a 72-hour execution delay.</p>
     </section>
   )
 }
