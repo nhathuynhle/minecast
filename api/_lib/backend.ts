@@ -1,4 +1,4 @@
-import { createPublicClient, http, isAddress, zeroAddress } from "viem";
+import { createPublicClient, fallback, http, isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
@@ -9,6 +9,23 @@ const FARCASTER_AUTH_ORIGIN = "https://auth.farcaster.xyz";
 const FARCASTER_JWKS = createRemoteJWKSet(
   new URL(`${FARCASTER_AUTH_ORIGIN}/.well-known/jwks.json`),
 );
+
+function createBaseClient(chainId: number) {
+  const chain = chainId === baseSepolia.id ? baseSepolia : base;
+  const configuredRpc = process.env.BASE_RPC_URL?.trim();
+  const publicRpcs = chain.id === baseSepolia.id
+    ? ["https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com"]
+    : ["https://mainnet.base.org", "https://base-rpc.publicnode.com"];
+  const rpcUrls = [...new Set([configuredRpc, ...publicRpcs].filter(Boolean))] as string[];
+
+  return createPublicClient({
+    chain,
+    transport: fallback(
+      rpcUrls.map((url) => http(url, { retryCount: 2, retryDelay: 400, timeout: 10_000 })),
+      { rank: true, retryCount: 1, retryDelay: 400 },
+    ),
+  });
+}
 
 function required(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is not configured.`);
@@ -71,7 +88,7 @@ export async function readCurrentEra(): Promise<number> {
   if (!isAddress(contract) || contract === zeroAddress || (chainId !== base.id && chainId !== baseSepolia.id)) {
     throw new Error("TokenCast contract is not configured.");
   }
-  const client = createPublicClient({ chain: chainId === baseSepolia.id ? baseSepolia : base, transport: http(process.env.BASE_RPC_URL) });
+  const client = createBaseClient(chainId);
   const era = await client.readContract({
     address: contract,
     abi: [{ type: "function", name: "currentEra", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" }] as const,
@@ -86,7 +103,7 @@ export async function readEmissionSchedule(): Promise<{ launchTime: string; halv
   if (!isAddress(contract) || contract === zeroAddress || (chainId !== base.id && chainId !== baseSepolia.id)) {
     throw new Error("TokenCast contract is not configured.");
   }
-  const client = createPublicClient({ chain: chainId === baseSepolia.id ? baseSepolia : base, transport: http(process.env.BASE_RPC_URL) });
+  const client = createBaseClient(chainId);
   const abi = [
     { type: "function", name: "launchTime", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
     { type: "function", name: "HALVING_PERIOD", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
@@ -106,6 +123,9 @@ export function json(data: unknown, status = 200): Response {
 
 export function error(error: unknown): Response {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
+  if (/cloudflare|<!doctype|http request failed|timed? out|fetch failed|\b50[0234]\b/i.test(message)) {
+    return json({ error: "Base RPC is temporarily unavailable. Please try again." }, 503);
+  }
   const status = /required|invalid|expired|does not belong|authenticate|verified.*wallet/i.test(message) ? 401
     : /already has|already linked|No settled|Daily claim|Claim your previous/i.test(message) ? 409
     : 500;
