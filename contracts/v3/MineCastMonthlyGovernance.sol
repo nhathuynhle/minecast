@@ -7,6 +7,18 @@ import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+interface IMineCastAirdropSnapshotAttestor {
+    function validateAirdrop(
+        uint256 epoch,
+        bytes32 merkleRoot,
+        bytes32 policyHash,
+        bytes32 snapshotHash,
+        uint256 amount,
+        uint32 claimDuration,
+        bytes[] calldata signatures
+    ) external view;
+}
+
 /// @notice Token interface required by MineCast's constrained monthly DAO.
 /// @dev TokenCast V3 must implement ERC20Votes and expose its immutable emission schedule.
 interface ITokenCastVotes is IERC20, IVotes {
@@ -202,7 +214,8 @@ contract MineCastMonthlyGovernance {
         uint64 executeAfter;
         uint32 claimDuration;
         bytes32 merkleRoot;
-        bytes32 metadataHash;
+        bytes32 policyHash;
+        bytes32 snapshotHash;
         uint256 amount;
         uint256 yesVotes;
         uint256 noVotes;
@@ -221,13 +234,23 @@ contract MineCastMonthlyGovernance {
 
     ITokenCastVotes public immutable token;
     MineCastCommunityTreasury public immutable treasury;
+    IMineCastAirdropSnapshotAttestor public immutable snapshotAttestor;
     uint64 public immutable launchTime;
+    bytes32 public immutable airdropPolicyHash;
     uint256 public nextProposalId = 1;
     mapping(uint256 proposalId => Proposal) public proposals;
     mapping(uint256 epoch => mapping(ProposalKind kind => uint256 proposalId)) public proposalForEpoch;
     mapping(uint256 proposalId => mapping(address voter => bool)) public hasVoted;
 
-    event ProposalCreated(uint256 indexed proposalId, ProposalKind indexed kind, uint256 indexed epoch, uint256 amount, bytes32 merkleRoot, bytes32 metadataHash);
+    event ProposalCreated(
+        uint256 indexed proposalId,
+        ProposalKind indexed kind,
+        uint256 indexed epoch,
+        uint256 amount,
+        bytes32 merkleRoot,
+        bytes32 policyHash,
+        bytes32 snapshotHash
+    );
     event VoteCast(uint256 indexed proposalId, address indexed voter, bool support, uint256 weight);
     event ProposalQueued(uint256 indexed proposalId, uint256 executeAfter);
     event ProposalExecuted(uint256 indexed proposalId, uint256 roundId);
@@ -245,14 +268,23 @@ contract MineCastMonthlyGovernance {
     error TreasuryBalanceTooLow();
     error NotLaunched();
 
-    constructor(ITokenCastVotes token_, MineCastCommunityTreasury treasury_, uint64 launchTime_) {
+    constructor(
+        ITokenCastVotes token_,
+        MineCastCommunityTreasury treasury_,
+        IMineCastAirdropSnapshotAttestor snapshotAttestor_,
+        uint64 launchTime_,
+        bytes32 airdropPolicyHash_
+    ) {
         if (
-            address(token_) == address(0) || address(treasury_) == address(0) || launchTime_ == 0
+            address(token_) == address(0) || address(treasury_) == address(0) || address(snapshotAttestor_) == address(0)
+                || launchTime_ == 0 || airdropPolicyHash_ == bytes32(0)
                 || token_.launchTime() != launchTime_
         ) revert InvalidProposal();
         token = token_;
         treasury = treasury_;
+        snapshotAttestor = snapshotAttestor_;
         launchTime = launchTime_;
+        airdropPolicyHash = airdropPolicyHash_;
     }
 
     function currentEpoch() public view returns (uint256) {
@@ -262,17 +294,22 @@ contract MineCastMonthlyGovernance {
 
     function createAirdropProposal(
         bytes32 merkleRoot,
-        bytes32 metadataHash,
-        uint32 claimDuration
+        bytes32 snapshotHash,
+        uint32 claimDuration,
+        bytes[] calldata signatures
     ) external returns (uint256 proposalId) {
-        if (merkleRoot == bytes32(0) || metadataHash == bytes32(0) || claimDuration < 1 days || claimDuration > 90 days) {
+        if (block.timestamp < launchTime) revert NotLaunched();
+        if (merkleRoot == bytes32(0) || snapshotHash == bytes32(0) || claimDuration < 1 days || claimDuration > 90 days) {
             revert InvalidAirdropConfiguration();
         }
-        proposalId = _create(ProposalKind.Airdrop, merkleRoot, metadataHash, claimDuration);
+        uint256 epoch = currentEpoch();
+        uint256 amount = _proposalAmount(ProposalKind.Airdrop, epoch);
+        snapshotAttestor.validateAirdrop(epoch, merkleRoot, airdropPolicyHash, snapshotHash, amount, claimDuration, signatures);
+        proposalId = _create(ProposalKind.Airdrop, merkleRoot, airdropPolicyHash, snapshotHash, claimDuration);
     }
 
     function createBurnProposal() external returns (uint256 proposalId) {
-        proposalId = _create(ProposalKind.Burn, bytes32(0), bytes32(0), 0);
+        proposalId = _create(ProposalKind.Burn, bytes32(0), bytes32(0), bytes32(0), 0);
     }
 
     function castVote(uint256 proposalId, bool support) external returns (uint256 weight) {
@@ -329,7 +366,8 @@ contract MineCastMonthlyGovernance {
     function _create(
         ProposalKind kind,
         bytes32 merkleRoot,
-        bytes32 metadataHash,
+        bytes32 policyHash,
+        bytes32 snapshotHash,
         uint32 claimDuration
     ) internal returns (uint256 proposalId) {
         if (block.timestamp < launchTime) revert NotLaunched();
@@ -350,10 +388,11 @@ contract MineCastMonthlyGovernance {
         proposal.executeAfter = 0;
         proposal.claimDuration = claimDuration;
         proposal.merkleRoot = merkleRoot;
-        proposal.metadataHash = metadataHash;
+        proposal.policyHash = policyHash;
+        proposal.snapshotHash = snapshotHash;
         proposal.amount = amount;
         proposalForEpoch[epoch][kind] = proposalId;
-        emit ProposalCreated(proposalId, kind, epoch, amount, merkleRoot, metadataHash);
+        emit ProposalCreated(proposalId, kind, epoch, amount, merkleRoot, policyHash, snapshotHash);
     }
 
     function _requireProposalThreshold(address proposer) private view {
