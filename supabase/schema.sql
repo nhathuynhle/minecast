@@ -64,14 +64,12 @@ create or replace function public.reserve_claim(p_fid bigint, p_wallet text, p_n
 returns table(amount_wei numeric) language plpgsql security definer set search_path = public as $$
 declare
   total numeric(78, 0);
-  last_claim timestamptz;
 begin
-  -- Lock the miner row so parallel browser calls cannot bypass the daily limit.
-  select last_claim_at into last_claim from miners where fid = p_fid for update;
+  -- Lock the miner row so parallel voucher requests remain serialized. The
+  -- contract is the source of truth for the 24-hour claim limit; recording a
+  -- claim here would lock users out before their transaction succeeds.
+  perform 1 from miners where fid = p_fid for update;
   if not found then raise exception 'Miner record was not found.'; end if;
-  if last_claim is not null and last_claim > now() - interval '24 hours' then
-    raise exception 'Daily claim limit reached. Try again after 24 hours.';
-  end if;
   -- A voucher is short-lived. If its transaction was never submitted, make the
   -- allocation available again before issuing the next voucher.
   update claim_allocations
@@ -80,7 +78,12 @@ begin
 
   with locked_allocations as (
     select id from claim_allocations
-    where fid = p_fid and lower(wallet_address) = lower(p_wallet) and status = 'available'
+    where fid = p_fid
+      and lower(wallet_address) = lower(p_wallet)
+      and (
+        status = 'available'
+        or (status = 'voucher_issued' and claim_nonce = p_nonce)
+      )
     for update
   ), reserved_allocations as (
     update claim_allocations allocation
@@ -96,8 +99,6 @@ begin
   from reserved_allocations;
 
   if total = 0 then return; end if;
-
-  update miners set last_claim_at = now() where fid = p_fid;
 
   return query select total;
 end;

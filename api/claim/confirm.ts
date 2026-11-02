@@ -50,9 +50,17 @@ export default async function handler(request: Request) {
     );
     if (!claim) throw new Error("Claim transaction amount does not match the issued allocation.");
 
+    const block = await client.getBlock({ blockNumber: receipt.blockNumber });
+    const claimedAt = new Date(Number(block.timestamp) * 1000).toISOString();
     await supabase(
       `claim_allocations?fid=eq.${fid}&wallet_address=ilike.${encodeURIComponent(wallet)}&claim_nonce=eq.${encodeURIComponent(String(nonce))}&status=eq.voucher_issued`,
       { method: "PATCH", body: JSON.stringify({ status: "claimed" }) },
+    );
+    // Only a successful, verified TokenCast receipt starts the backend's
+    // analytics clock. The contract independently enforces the 24-hour limit.
+    await supabase(
+      `miners?fid=eq.${fid}`,
+      { method: "PATCH", body: JSON.stringify({ last_claim_at: claimedAt }) },
     );
     return json({ confirmed: true, transactionHash });
   } catch (cause) { return error(cause); }

@@ -48,7 +48,17 @@ export async function supabase(path: string, init: RequestInit = {}) {
       ...init.headers,
     },
   });
-  if (!response.ok) throw new Error(`Supabase request failed: ${await response.text()}`);
+  if (!response.ok) {
+    const raw = await response.text();
+    let message = `Database request failed (${response.status}).`;
+    try {
+      const payload = JSON.parse(raw) as { message?: unknown };
+      if (typeof payload.message === "string" && payload.message.trim()) message = payload.message;
+    } catch {
+      // Keep the safe generic message instead of exposing an HTML/JSON response.
+    }
+    throw new Error(message);
+  }
   return response;
 }
 
