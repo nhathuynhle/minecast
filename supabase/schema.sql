@@ -89,7 +89,11 @@ begin
     where allocation.id = locked.id
     returning allocation.amount_wei
   )
-  select coalesce(sum(amount_wei), 0) into total from reserved_allocations;
+  -- `amount_wei` is also the name of this function's output column, so it
+  -- must be qualified to avoid PostgreSQL's PL/pgSQL ambiguity error.
+  select coalesce(sum(reserved_allocations.amount_wei), 0)
+  into total
+  from reserved_allocations;
 
   if total = 0 then return; end if;
 
