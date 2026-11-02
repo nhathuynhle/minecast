@@ -1,6 +1,6 @@
-import { createPublicClient, getAddress, http, isAddress, parseEventLogs, zeroAddress } from "viem";
+import { getAddress, isAddress, parseEventLogs, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { error, json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
+import { createBaseClient, error, json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
 
 const claimedEventAbi = [{
   type: "event",
@@ -31,10 +31,7 @@ export default async function handler(request: Request) {
     if (!isAddress(contract) || contract === zeroAddress || (chainId !== base.id && chainId !== baseSepolia.id)) {
       throw new Error("TokenCast contract is not configured.");
     }
-    const client = createPublicClient({
-      chain: chainId === baseSepolia.id ? baseSepolia : base,
-      transport: http(process.env.BASE_RPC_URL),
-    });
+    const client = createBaseClient(chainId);
     const receipt = await client.getTransactionReceipt({ hash: transactionHash as `0x${string}` });
     if (receipt.status !== "success" || !receipt.to || getAddress(receipt.to) !== getAddress(contract)) {
       throw new Error("Claim transaction was not confirmed by TokenCast.");

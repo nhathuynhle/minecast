@@ -1,5 +1,6 @@
-import { createPublicClient, createWalletClient, custom, formatUnits, http, isAddress, zeroAddress } from "viem"
+import { createPublicClient, createWalletClient, custom, formatUnits, isAddress, zeroAddress } from "viem"
 import { base, baseSepolia } from "viem/chains"
+import { baseRpcTransport } from "./base-rpc"
 import { ethereumProviderForChain } from "@/lib/farcaster"
 import { TOKENCAST_CHAIN_ID } from "@/lib/contract"
 
@@ -13,7 +14,7 @@ export const DAO_CHAIN_ID = configuredChainId === baseSepolia.id ? baseSepolia.i
 export const DAO_IS_DEPLOYED = DAO_GOVERNANCE_ADDRESS !== zeroAddress
 
 const chain = DAO_CHAIN_ID === baseSepolia.id ? baseSepolia : base
-const publicClient = createPublicClient({ chain, transport: http() })
+const publicClient = createPublicClient({ chain, transport: baseRpcTransport(chain.id) })
 
 const GOVERNANCE_ABI = [
   { type: "function", name: "currentCalendarMonth", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },

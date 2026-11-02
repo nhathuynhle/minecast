@@ -1,4 +1,4 @@
-import { createPublicClient, formatUnits, http } from "viem"
+import { createPublicClient, formatUnits } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import {
   TOKENCAST_ABI,
@@ -6,9 +6,10 @@ import {
   TOKENCAST_CONTRACT_ADDRESS,
   TOKENCAST_IS_DEPLOYED,
 } from "@/lib/contract"
+import { baseRpcTransport } from "@/lib/base-rpc"
 
 const chain = TOKENCAST_CHAIN_ID === baseSepolia.id ? baseSepolia : base
-const publicClient = createPublicClient({ chain, transport: http() })
+const publicClient = createPublicClient({ chain, transport: baseRpcTransport(chain.id) })
 
 export type OnchainSnapshot = {
   mintedSupply: number

@@ -1,7 +1,7 @@
 import { privateKeyToAccount } from "viem/accounts";
-import { createPublicClient, http, isAddress, zeroAddress } from "viem";
+import { isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend";
+import { createBaseClient, error, requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend";
 
 // Types cho Vercel Edge/Serverless function
 export const config = {
@@ -39,11 +39,7 @@ export default async function handler(request: Request) {
       return new Response(JSON.stringify({ error: "Claim contract is not configured for this network." }), { status: 503, headers: { "Content-Type": "application/json" } });
     }
 
-    const chain = configuredChainId === baseSepolia.id ? baseSepolia : base;
-    const publicClient = createPublicClient({
-      chain,
-      transport: http(process.env.BASE_RPC_URL),
-    });
+    const publicClient = createBaseClient(configuredChainId);
     const onchainNonce = await publicClient.readContract({
       address: contractAddress,
       abi: [{
@@ -129,10 +125,5 @@ export default async function handler(request: Request) {
         headers: { "Content-Type": "application/json" },
       }
     );
-  } catch (err: any) {
-    return new Response(JSON.stringify({ error: err.message || "Internal error" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  } catch (cause) { return error(cause); }
 }

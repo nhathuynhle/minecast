@@ -1,8 +1,9 @@
-import { createPublicClient, createWalletClient, custom, getAddress, http } from "viem";
+import { createPublicClient, createWalletClient, custom, getAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import { TOKENCAST_ABI, TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "./contract";
 import { readClaimNonce } from "./onchain";
 import { ethereumProviderForChain, farcasterFetch } from "./farcaster";
+import { baseRpcTransport } from "./base-rpc";
 
 export type ClaimStatus = "idle" | "requesting_voucher" | "sending_tx" | "success" | "error";
 
@@ -55,7 +56,7 @@ export async function executeClaimOnBase({
     onStatusChange("sending_tx", "Vui lòng xác nhận giao dịch trên ví Base của bạn (Phí gas ~$0.002)...");
 
     // 2. Mở ví của user để ký giao dịch on-chain
-    const publicClient = createPublicClient({ chain, transport: http() });
+    const publicClient = createPublicClient({ chain, transport: baseRpcTransport(chain.id) });
     const { request } = await publicClient.simulateContract({
       address: TOKENCAST_CONTRACT_ADDRESS,
       abi: TOKENCAST_ABI,

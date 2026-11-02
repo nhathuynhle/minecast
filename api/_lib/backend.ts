@@ -10,19 +10,23 @@ const FARCASTER_JWKS = createRemoteJWKSet(
   new URL(`${FARCASTER_AUTH_ORIGIN}/.well-known/jwks.json`),
 );
 
-function createBaseClient(chainId: number) {
+export function createBaseClient(chainId: number) {
   const chain = chainId === baseSepolia.id ? baseSepolia : base;
   const configuredRpc = process.env.BASE_RPC_URL?.trim();
-  const publicRpcs = chain.id === baseSepolia.id
-    ? ["https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com"]
-    : ["https://mainnet.base.org", "https://base-rpc.publicnode.com"];
-  const rpcUrls = [...new Set([configuredRpc, ...publicRpcs].filter(Boolean))] as string[];
+  const officialRpc = chain.id === baseSepolia.id ? "https://sepolia.base.org" : "https://mainnet.base.org";
+  const publicNodeRpc = chain.id === baseSepolia.id
+    ? "https://base-sepolia-rpc.publicnode.com"
+    : "https://base-rpc.publicnode.com";
+  // The official Base public URL can challenge serverless calls with Cloudflare
+  // (HTTP 403). A custom paid RPC remains first; otherwise PublicNode is first.
+  const customRpc = configuredRpc && configuredRpc.replace(/\/$/, "") !== officialRpc ? configuredRpc : undefined;
+  const rpcUrls = [...new Set([customRpc, publicNodeRpc, officialRpc].filter(Boolean))] as string[];
 
   return createPublicClient({
     chain,
     transport: fallback(
       rpcUrls.map((url) => http(url, { retryCount: 2, retryDelay: 400, timeout: 10_000 })),
-      { rank: true, retryCount: 1, retryDelay: 400 },
+      { retryCount: 1, retryDelay: 400 },
     ),
   });
 }
