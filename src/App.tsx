@@ -917,10 +917,11 @@ function TokenPanel({
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <input
             value={payout}
-            onChange={(event) => onPayout(event.target.value)}
             placeholder="Base wallet address (0x...)"
             spellCheck={false}
             autoCapitalize="none"
+            readOnly
+            aria-label="Connected Base wallet"
             className="h-11 flex-1 rounded-xl border border-gray-700 bg-[#0b0f17] px-3 font-mono text-sm text-white outline-none placeholder:text-gray-500"
           />
           <button
@@ -937,13 +938,13 @@ function TokenPanel({
         <button
           type="button"
           onClick={handleClaim}
-          disabled={!TOKENCAST_IS_DEPLOYED || claimStatus === "requesting_voucher" || claimStatus === "sending_tx"}
+          disabled={!TOKENCAST_IS_DEPLOYED || claimStatus === "signing_wallet_login" || claimStatus === "requesting_voucher" || claimStatus === "sending_tx"}
           className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#8a63d2] text-sm font-semibold text-white transition hover:bg-[#7c52c8] disabled:opacity-50"
         >
-          {claimStatus === "requesting_voucher" || claimStatus === "sending_tx" ? (
+          {claimStatus === "signing_wallet_login" || claimStatus === "requesting_voucher" || claimStatus === "sending_tx" ? (
             <>
               <Loader2 className="size-4 animate-spin" />
-              Processing transaction on Base...
+              {claimStatus === "signing_wallet_login" ? "Sign free wallet login..." : claimStatus === "requesting_voucher" ? "Preparing secure claim..." : "Processing transaction on Base..."}
             </>
           ) : (
             <>{TOKENCAST_IS_DEPLOYED ? "Claim verified allocation" : "Claims coming after deployment"}</>

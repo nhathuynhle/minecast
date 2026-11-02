@@ -1,12 +1,33 @@
 import { privateKeyToAccount } from "viem/accounts";
-import { isAddress, zeroAddress } from "viem";
+import { getAddress, isAddress, zeroAddress } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { createBaseClient, error, requireFarcasterUser, reserveClaimAllocation } from "./_lib/backend";
+import { createBaseClient, error, requireFarcasterUser, reserveClaimAllocation, verifyClaimWalletLogin } from "./_lib/backend";
 
 // Types cho Vercel Edge/Serverless function
 export const config = {
   runtime: "edge",
 };
+
+function readSignerPrivateKey(): `0x${string}` {
+  let value = process.env.SIGNER_PRIVATE_KEY?.trim();
+  if (!value) {
+    throw new Error("Voucher signer is not configured on the server.");
+  }
+
+  // Vercel values are sometimes pasted with quotes or without the 0x prefix.
+  // Normalize those harmless differences, but never accept a wallet address or
+  // an arbitrary string as a private key.
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1).trim();
+  }
+  const normalized = value.startsWith("0x") ? value : `0x${value}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(normalized)) {
+    throw new Error(
+      "Voucher signer is misconfigured. SIGNER_PRIVATE_KEY must be a 32-byte private key (64 hex characters), not a wallet address.",
+    );
+  }
+  return normalized as `0x${string}`;
+}
 
 export default async function handler(request: Request) {
   if (request.method !== "POST") {
@@ -19,7 +40,7 @@ export default async function handler(request: Request) {
   try {
     const fid = await requireFarcasterUser(request);
     const body = await request.json();
-    const { userAddress, nonce, chainId = 8453 } = body;
+    const { userAddress, nonce, chainId = 8453, walletLogin } = body;
 
     if (!isAddress(userAddress) || nonce === undefined) {
       return new Response(JSON.stringify({ error: "Missing required parameters" }), {
@@ -27,6 +48,8 @@ export default async function handler(request: Request) {
         headers: { "Content-Type": "application/json" },
       });
     }
+
+    const verifiedWallet = await verifyClaimWalletLogin(fid, userAddress, walletLogin);
 
     const contractAddress = process.env.TOKENCAST_CONTRACT_ADDRESS as `0x${string}`;
     const configuredChainId = Number(process.env.TOKENCAST_CHAIN_ID ?? 8453);
@@ -39,39 +62,47 @@ export default async function handler(request: Request) {
       return new Response(JSON.stringify({ error: "Claim contract is not configured for this network." }), { status: 503, headers: { "Content-Type": "application/json" } });
     }
 
+    // Validate the server signer before reserving any allocation. A bad Vercel
+    // value must never move a reward into voucher_issued state.
+    const account = privateKeyToAccount(readSignerPrivateKey());
     const publicClient = createBaseClient(configuredChainId);
-    const onchainNonce = await publicClient.readContract({
-      address: contractAddress,
-      abi: [{
+    const contractReadAbi = [
+      {
         type: "function",
         name: "userNonces",
         inputs: [{ name: "", type: "address" }],
         outputs: [{ name: "", type: "uint256" }],
         stateMutability: "view",
-      }] as const,
-      functionName: "userNonces",
-      args: [userAddress],
-    });
+      },
+      {
+        type: "function",
+        name: "signServer",
+        inputs: [],
+        outputs: [{ name: "", type: "address" }],
+        stateMutability: "view",
+      },
+    ] as const;
+    const [onchainNonce, onchainSigner] = await Promise.all([
+      publicClient.readContract({
+        address: contractAddress,
+        abi: contractReadAbi,
+        functionName: "userNonces",
+        args: [verifiedWallet],
+      }),
+      publicClient.readContract({
+        address: contractAddress,
+        abi: contractReadAbi,
+        functionName: "signServer",
+      }),
+    ]);
+    if (getAddress(account.address) !== getAddress(onchainSigner)) {
+      throw new Error("Configured voucher signer does not match TokenCast signServer.");
+    }
     if (onchainNonce !== BigInt(nonce)) {
       return new Response(JSON.stringify({ error: "Claim nonce is stale. Refresh and try again." }), { status: 409, headers: { "Content-Type": "application/json" } });
     }
 
-    // Lấy Signer Private Key từ biến môi trường Vercel
-    const serverPrivateKey = process.env.SIGNER_PRIVATE_KEY as `0x${string}`;
-    if (!serverPrivateKey) {
-      // Mock signature cho môi trường dev/chưa cấu hình env
-      return new Response(
-        JSON.stringify({
-          error: "SIGNER_PRIVATE_KEY is not configured on Vercel environment variables yet.",
-          mock: true,
-        }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
-    }
-
-    const amountWei = BigInt(await reserveClaimAllocation(fid, userAddress, String(onchainNonce)));
-
-    const account = privateKeyToAccount(serverPrivateKey);
+    const amountWei = BigInt(await reserveClaimAllocation(fid, verifiedWallet, String(onchainNonce)));
 
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 1800); // Hết hạn sau 30 phút
 
@@ -93,7 +124,7 @@ export default async function handler(request: Request) {
     };
 
     const message = {
-      user: userAddress as `0x${string}`,
+      user: verifiedWallet,
       amount: amountWei,
       nonce: BigInt(nonce),
       deadline: deadline,

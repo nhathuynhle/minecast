@@ -5,7 +5,7 @@ import { readClaimNonce } from "./onchain";
 import { ethereumProviderForChain, farcasterFetch } from "./farcaster";
 import { baseRpcTransport } from "./base-rpc";
 
-export type ClaimStatus = "idle" | "requesting_voucher" | "sending_tx" | "success" | "error";
+export type ClaimStatus = "idle" | "signing_wallet_login" | "requesting_voucher" | "sending_tx" | "success" | "error";
 
 export async function executeClaimOnBase({
   userAddress,
@@ -35,7 +35,22 @@ export async function executeClaimOnBase({
     }
     const nonce = await readClaimNonce(account);
 
+    // Signing this short-lived message is free: it proves the user controls
+    // the withdrawal wallet before the server issues a claim voucher.
+    onStatusChange("signing_wallet_login", "Sign the free MineCast withdrawal login message in your wallet...");
+    const loginResponse = await farcasterFetch("/api/claim/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userAddress: account }),
+    });
+    const login = await loginResponse.json();
+    if (!loginResponse.ok || !login.message || !login.nonce || !login.proof || !login.expiresAt) {
+      throw new Error(login.error || "Could not prepare secure wallet login.");
+    }
+    const loginSignature = await walletClient.signMessage({ account, message: login.message });
+
     // 1. Gọi Server API để lấy voucher có chữ ký hợp lệ
+    onStatusChange("requesting_voucher", "Verifying wallet login and preparing your claim...");
     const response = await farcasterFetch("/api/claim", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -43,6 +58,12 @@ export async function executeClaimOnBase({
         userAddress: account,
         nonce: nonce.toString(),
         chainId,
+        walletLogin: {
+          expiresAt: login.expiresAt,
+          nonce: login.nonce,
+          proof: login.proof,
+          signature: loginSignature,
+        },
       }),
     });
 

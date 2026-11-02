@@ -35,7 +35,7 @@ The mining UI can be previewed without a contract, but its browser `localStorage
 
 1. Deploy the V2 `TokenCast.sol` on Base or Base Sepolia with the voucher signer and Airdrop Treasury address. For the current test plan, the Treasury constructor value is `0x0344848d0075AF5ba6219744D4a4e8b846826903`. V2 cannot reuse the former test contract address because it adds on-chain calendar emission enforcement and the immutable 100× per-wallet claim ceiling.
 2. Copy `.env.example` to `.env.local` for local development, and set the same public contract address/network in Vercel.
-3. Set `TOKENCAST_CONTRACT_ADDRESS`, `TOKENCAST_CHAIN_ID`, and `SIGNER_PRIVATE_KEY` only as Vercel server variables. Never expose the signer with a `VITE_` prefix.
+3. Set `TOKENCAST_CONTRACT_ADDRESS`, `TOKENCAST_CHAIN_ID`, and `SIGNER_PRIVATE_KEY` only as Vercel server variables. `SIGNER_PRIVATE_KEY` must be the 32-byte private key whose address equals the contract's `signServer` (not the public wallet address); never expose it with a `VITE_` prefix.
 4. Create the Supabase schema by running [`supabase/schema.sql`](supabase/schema.sql) in the Supabase SQL Editor, then configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as Vercel server variables.
 5. Configure `NEYNAR_API_KEY`. The API verifies Quick Auth JWTs against the signed production domain `minecast-beta.vercel.app`, verifies the cast's author via Neynar, enforces one active session per FID, and settles sessions atomically.
 6. Keep `localStorage`, a browser-submitted amount, and a typed handle out of eligibility decisions. They are UI convenience only, never claim proof.

@@ -94,6 +94,7 @@ export function requireMineCastAdmin(fid: number): void {
 
 const OPS_SESSION_MS = 8 * 60 * 60 * 1000;
 const OPS_CHALLENGE_MS = 5 * 60 * 1000;
+const CLAIM_LOGIN_MS = 5 * 60 * 1000;
 
 function base64Url(value: Uint8Array | string): string {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
@@ -184,6 +185,65 @@ export async function requireOpsSession(request: Request): Promise<`0x${string}`
 export function requireWallet(value: unknown): `0x${string}` {
   if (typeof value !== "string" || !isAddress(value)) throw new Error("A valid Base wallet address is required.");
   return value as `0x${string}`;
+}
+
+type ClaimWalletLogin = {
+  expiresAt: number;
+  nonce: string;
+  proof: string;
+  signature: `0x${string}`;
+};
+
+function claimLoginMessage(fid: number, wallet: `0x${string}`, expiresAt: number, nonce: string): string {
+  return [
+    "MineCast Withdrawal Login",
+    `Domain: ${FARCASTER_DOMAIN}`,
+    `Farcaster FID: ${fid}`,
+    `Wallet: ${wallet}`,
+    `Nonce: ${nonce}`,
+    `Expires: ${new Date(expiresAt).toISOString()}`,
+    "",
+    "This signature proves wallet ownership. It does not create a transaction or approve token spending.",
+  ].join("\n");
+}
+
+function claimLoginPayload(fid: number, wallet: `0x${string}`, expiresAt: number, nonce: string): string {
+  return `claim-login:${fid}:${wallet.toLowerCase()}:${expiresAt}:${nonce}`;
+}
+
+/** Creates a short-lived, tamper-proof message for a free wallet login. */
+export async function createClaimWalletLogin(fid: number, value: unknown) {
+  const wallet = getAddress(requireWallet(value));
+  const expiresAt = Date.now() + CLAIM_LOGIN_MS;
+  const nonce = crypto.randomUUID();
+  const proof = base64Url(await opsHmac(claimLoginPayload(fid, wallet, expiresAt, nonce)));
+  return { wallet, expiresAt, nonce, proof, message: claimLoginMessage(fid, wallet, expiresAt, nonce) };
+}
+
+/** Verifies that this Farcaster user controls the exact wallet requesting a claim. */
+export async function verifyClaimWalletLogin(fid: number, value: unknown, login: unknown): Promise<`0x${string}`> {
+  const wallet = getAddress(requireWallet(value));
+  if (!login || typeof login !== "object") throw new Error("A signed wallet login is required before withdrawal.");
+  const input = login as Partial<ClaimWalletLogin>;
+  if (
+    !Number.isSafeInteger(input.expiresAt) ||
+    typeof input.nonce !== "string" ||
+    typeof input.proof !== "string" ||
+    typeof input.signature !== "string" ||
+    !/^0x[a-fA-F0-9]{130}$/.test(input.signature)
+  ) {
+    throw new Error("Wallet login proof is invalid. Please sign in again.");
+  }
+  if (input.expiresAt < Date.now() || input.expiresAt > Date.now() + CLAIM_LOGIN_MS) {
+    throw new Error("Wallet login has expired. Please sign in again.");
+  }
+  const payload = claimLoginPayload(fid, wallet, input.expiresAt, input.nonce);
+  if (!(await validOpsHmac(payload, input.proof))) throw new Error("Wallet login proof is invalid. Please sign in again.");
+  const message = claimLoginMessage(fid, wallet, input.expiresAt, input.nonce);
+  if (!(await verifyMessage({ address: wallet, message, signature: input.signature as `0x${string}` }))) {
+    throw new Error("Wallet signature could not be verified. Please sign in again.");
+  }
+  return wallet;
 }
 
 export async function reserveClaimAllocation(fid: number, walletAddress: string, nonce: string): Promise<string> {
