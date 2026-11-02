@@ -115,6 +115,7 @@ create or replace function public.settle_ended_sessions(
   p_base_daily_wei numeric
 )
 returns table(session_id uuid) language plpgsql security definer set search_path = public as $$
+#variable_conflict use_column
 begin
   return query
   with eligible as (
@@ -134,7 +135,7 @@ begin
     join miners miner on miner.fid = session.fid
     left join miners inviter on inviter.fid = miner.inviter_fid
     where session.fid = p_fid and session.settled_at is null and session.ends_at <= now()
-    for update
+    for update of session
   ), daily_weights as (
     select
       sum(session.reward_weight) as total_weight,
@@ -151,22 +152,23 @@ begin
   ), priced as (
     select eligible.*, least(
       floor(
-        (p_base_daily_wei / power(2, greatest(0, floor(extract(epoch from (eligible.emission_day::timestamp - to_timestamp(p_launch_time))) / p_halving_seconds)::integer)))
+        (p_base_daily_wei / power(2::numeric, greatest(0, floor(extract(epoch from (eligible.emission_day::timestamp - to_timestamp(p_launch_time))) / p_halving_seconds)::integer)))
         * eligible.reward_weight
         / nullif(daily_weights.total_weight + daily_weights.referral_weight * 8 / 100, 0)
       ),
-      -- A verified creator may receive at most the public 100x benchmark.
-      -- The residual stays unallocated for the later Airdrop Treasury finalisation.
+      -- Each creator is capped at the public base reward multiplied by their
+      -- verified follower weight. Residual daily emission remains unallocated
+      -- for the later Airdrop Treasury finalisation.
       floor(
-        (p_base_daily_wei / power(2, greatest(0, floor(extract(epoch from (eligible.emission_day::timestamp - to_timestamp(p_launch_time))) / p_halving_seconds)::integer)))
-        / 100000 * 100
+        (p_base_daily_wei / power(2::numeric, greatest(0, floor(extract(epoch from (eligible.emission_day::timestamp - to_timestamp(p_launch_time))) / p_halving_seconds)::integer)))
+        / 100000 * eligible.reward_weight
       )
     ) as reward_wei
     from eligible
     cross join daily_weights
   ), updated_sessions as (
     update mining_sessions session
-    set reward_wei = priced.reward_wei
+    set reward_wei = priced.reward_wei, settled_at = now()
     from priced
     where session.id = priced.id
     returning session.id
@@ -179,12 +181,8 @@ begin
     join miners inviter on inviter.fid = priced.inviter_fid
     where priced.referral_qualified
     on conflict (session_id, fid) do nothing
-    returning session_id
+    returning claim_allocations.session_id
   )
-  update mining_sessions session
-  set settled_at = now()
-  from updated_sessions
-  where session.id = updated_sessions.id
-  returning session.id;
+  select updated_sessions.id from updated_sessions;
 end;
 $$;
