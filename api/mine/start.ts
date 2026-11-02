@@ -1,4 +1,4 @@
-import { error, json, readCurrentEra, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
+import { error, json, readCurrentEra, reconcileClaimedAllocations, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
 
 const SESSION_SECONDS = 24 * 60 * 60;
 // UI estimate. The actual settlement divides the fixed daily budget across
@@ -54,6 +54,9 @@ export default async function handler(request: Request) {
     const now = new Date();
     const endsAt = new Date(now.getTime() + SESSION_SECONDS * 1000);
     const referralCode = `MC${fid.toString(36).toUpperCase()}`;
+    // Base is authoritative. Recover automatically if the wallet transaction
+    // was mined but the browser never reached the confirmation callback.
+    await reconcileClaimedAllocations(fid, wallet);
     const existingResponse = await supabase(`miners?fid=eq.${fid}&select=inviter_fid,wallet_address`);
     const [existing] = await existingResponse.json();
     const unclaimedResponse = await supabase(`claim_allocations?fid=eq.${fid}&status=neq.claimed&select=id&limit=1`);

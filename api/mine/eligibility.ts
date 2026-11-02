@@ -1,4 +1,4 @@
-import { error, json, requireFarcasterUser, supabase } from "../_lib/backend";
+import { error, json, reconcileClaimedAllocations, requireFarcasterUser, supabase } from "../_lib/backend";
 
 export const config = { runtime: "edge" };
 
@@ -7,6 +7,7 @@ export default async function handler(request: Request) {
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
   try {
     const fid = await requireFarcasterUser(request);
+    await reconcileClaimedAllocations(fid);
     const unclaimed = await supabase(`claim_allocations?fid=eq.${fid}&status=neq.claimed&select=id&limit=1`);
     return json({ eligible: (await unclaimed.json()).length === 0 });
   } catch (cause) { return error(cause); }

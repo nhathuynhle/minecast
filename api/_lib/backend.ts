@@ -256,6 +256,52 @@ export async function reserveClaimAllocation(fid: number, walletAddress: string,
   return String(allocation.amount_wei);
 }
 
+/**
+ * Reconciles a claim whose Base transaction succeeded but whose browser did
+ * not reach /api/claim/confirm (for example, after an app close or RPC
+ * timeout). The TokenCast nonce is the source of truth: an issued voucher can
+ * only advance it after a successful onchain claim.
+ */
+export async function reconcileClaimedAllocations(fid: number, walletAddress?: string): Promise<number> {
+  let wallet: `0x${string}` | undefined;
+  if (walletAddress) {
+    wallet = getAddress(requireWallet(walletAddress));
+  } else {
+    const response = await supabase(`miners?fid=eq.${fid}&select=wallet_address&limit=1`);
+    const [miner] = await response.json() as Array<{ wallet_address?: string | null }>;
+    if (!miner?.wallet_address || !isAddress(miner.wallet_address)) return 0;
+    wallet = getAddress(miner.wallet_address);
+  }
+
+  const contract = process.env.TOKENCAST_CONTRACT_ADDRESS as `0x${string}`;
+  const chainId = Number(process.env.TOKENCAST_CHAIN_ID ?? 8453);
+  if (!isAddress(contract) || contract === zeroAddress || (chainId !== base.id && chainId !== baseSepolia.id)) return 0;
+
+  const nonce = await createBaseClient(chainId).readContract({
+    address: contract,
+    abi: [{
+      type: "function",
+      name: "userNonces",
+      inputs: [{ name: "", type: "address" }],
+      outputs: [{ name: "", type: "uint256" }],
+      stateMutability: "view",
+    }] as const,
+    functionName: "userNonces",
+    args: [wallet],
+  });
+  if (nonce === 0n) return 0;
+
+  const reconciled = await supabase(
+    `claim_allocations?fid=eq.${fid}&wallet_address=ilike.${encodeURIComponent(wallet)}&status=eq.voucher_issued&claim_nonce=lt.${nonce.toString()}&select=id`,
+    { method: "PATCH", body: JSON.stringify({ status: "claimed" }) },
+  );
+  const rows = await reconciled.json() as Array<{ id: string }>;
+  if (rows.length) {
+    await supabase(`miners?fid=eq.${fid}`, { method: "PATCH", body: JSON.stringify({ last_claim_at: new Date().toISOString() }) });
+  }
+  return rows.length;
+}
+
 export async function readCurrentEra(): Promise<number> {
   const contract = process.env.TOKENCAST_CONTRACT_ADDRESS as `0x${string}`;
   const chainId = Number(process.env.TOKENCAST_CHAIN_ID ?? 8453);

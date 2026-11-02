@@ -910,9 +910,9 @@ function TokenPanel({
         </div>
 
         <p className="mt-2 text-sm text-gray-300">
-          Browser display balance: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
+          Browser preview only: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
         </p>
-        <p className="mt-1 text-xs text-gray-400">A server-verified claim ledger determines the withdrawable amount; the browser never chooses it.</p>
+        <p className="mt-1 text-xs text-gray-400">Withdrawable status comes from the server ledger and Base receipt, never this browser preview.</p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <input
