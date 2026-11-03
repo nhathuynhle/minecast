@@ -337,6 +337,26 @@ export async function readEmissionSchedule(): Promise<{ launchTime: string; halv
   return { launchTime: launchTime.toString(), halvingSeconds: halvingSeconds.toString(), baseDailyWei: baseDailyWei.toString() };
 }
 
+/**
+ * Makes a completed 24-hour session claimable before any new session or
+ * eligibility decision. Keeping this on the server prevents the browser's
+ * local session cache from getting out of sync with the database ledger.
+ */
+export async function settleEndedMineSessions(fid: number): Promise<Array<{ session_id: string }>> {
+  const schedule = await readEmissionSchedule();
+  const response = await supabase("rpc/settle_ended_sessions", {
+    method: "POST",
+    body: JSON.stringify({
+      p_fid: fid,
+      p_launch_time: schedule.launchTime,
+      p_halving_seconds: schedule.halvingSeconds,
+      p_base_daily_wei: schedule.baseDailyWei,
+    }),
+  });
+  const rows = await response.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 }

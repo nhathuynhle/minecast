@@ -1,4 +1,4 @@
-import { error, json, readCurrentEra, reconcileClaimedAllocations, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend";
+import { error, json, readCurrentEra, reconcileClaimedAllocations, requireFarcasterUser, requireWallet, settleEndedMineSessions, supabase } from "../_lib/backend";
 
 const SESSION_SECONDS = 24 * 60 * 60;
 // UI estimate. The actual settlement divides the fixed daily budget across
@@ -54,6 +54,9 @@ export default async function handler(request: Request) {
     const now = new Date();
     const endsAt = new Date(now.getTime() + SESSION_SECONDS * 1000);
     const referralCode = `MC${fid.toString(36).toUpperCase()}`;
+    // A server session, not the browser timer, is authoritative. Settle any
+    // finished session before checking whether this miner can start another.
+    await settleEndedMineSessions(fid);
     // Base is authoritative. Recover automatically if the wallet transaction
     // was mined but the browser never reached the confirmation callback.
     await reconcileClaimedAllocations(fid, wallet);
@@ -89,8 +92,11 @@ export default async function handler(request: Request) {
       headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ fid, username: canonicalUsername, wallet_address: wallet, follower_count: followerCount, referral_code: referralCode, ...(inviterFid ? { inviter_fid: inviterFid } : {}) }),
     });
-    const active = await supabase(`mining_sessions?fid=eq.${fid}&settled_at=is.null&select=id`);
-    if ((await active.json()).length) throw new Error("This miner already has an active session.");
+    const active = await supabase(`mining_sessions?fid=eq.${fid}&settled_at=is.null&select=id,ends_at&order=ends_at.asc&limit=1`);
+    const [activeSession] = await active.json() as Array<{ id: string; ends_at: string }>;
+    if (activeSession) {
+      throw new Error(`Your active mining session ends at ${new Date(activeSession.ends_at).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.`);
+    }
 
     const era = await readCurrentEra();
     const rewardWei = (BASE_REWARD_WEI >> BigInt(era)) * rewardWeight;

@@ -94,8 +94,9 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [composer, setComposer] = useState(false)
   const [notice, setNotice] = useState("")
-  const [claimGate, setClaimGate] = useState<"checking" | "claim" | "cast" | "error">("checking")
+  const [claimGate, setClaimGate] = useState<"checking" | "active" | "claim" | "cast" | "error">("checking")
   const [claimAmount, setClaimAmount] = useState("0")
+  const [claimEndsAt, setClaimEndsAt] = useState<string | null>(null)
   const [gateBusy, setGateBusy] = useState(false)
   const [farcasterIdentity, setFarcasterIdentity] = useState<FarcasterIdentity | null>(null)
   const minerRef = useRef(miner)
@@ -174,7 +175,8 @@ export default function App() {
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Unable to check your reward.")
       setClaimAmount(data.amountWei || "0")
-      setClaimGate(data.eligible ? "cast" : "claim")
+      setClaimEndsAt(typeof data.endsAt === "string" ? data.endsAt : null)
+      setClaimGate(data.eligible ? "cast" : data.reason === "active_session" ? "active" : "claim")
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Unable to check your reward.")
       setClaimGate("error")
@@ -292,6 +294,7 @@ export default function App() {
           notice={notice}
           claimGate={claimGate}
           claimAmount={claimAmount}
+          claimEndsAt={claimEndsAt}
           gateBusy={gateBusy}
           onRetry={() => void refreshClaimGate()}
           onClaim={async () => {
@@ -1271,7 +1274,7 @@ function Composer({
   onNotice,
   onClose,
   onPublish,
-  claimGate, claimAmount, gateBusy, onClaim, onRetry,
+  claimGate, claimAmount, claimEndsAt, gateBusy, onClaim, onRetry,
 }: {
   era: number
   reward: number
@@ -1279,8 +1282,9 @@ function Composer({
   onNotice: (value: string) => void
   onClose: () => void
   onPublish: (text: string) => Promise<boolean>
-  claimGate: "checking" | "claim" | "cast" | "error"
+  claimGate: "checking" | "active" | "claim" | "cast" | "error"
   claimAmount: string
+  claimEndsAt: string | null
   gateBusy: boolean
   onClaim: () => Promise<void>
   onRetry: () => void
@@ -1341,7 +1345,7 @@ function Composer({
           </button>
         </div>
         {claimGate !== "cast" ? <div className="mt-4 space-y-3">
-          <p className="text-sm text-gray-300">{claimGate === "checking" ? "Checking your mining reward…" : claimGate === "claim" ? `Claim your verified reward before your next cast: ${formatTokens(Number(BigInt(claimAmount)) / 1e18)} ${TOKEN_SYMBOL}` : "Could not check your reward."}</p>
+          <p className="text-sm text-gray-300">{claimGate === "checking" ? "Checking your mining reward…" : claimGate === "active" ? `Your server-verified mining session is still active${claimEndsAt ? ` until ${new Date(claimEndsAt).toLocaleString()}` : ""}. Reward becomes claimable after it ends.` : claimGate === "claim" ? `Claim your verified reward before your next cast: ${formatTokens(Number(BigInt(claimAmount)) / 1e18)} ${TOKEN_SYMBOL}` : "Could not check your reward."}</p>
           {notice ? <p className="text-sm text-red-400">{notice}</p> : null}
           {claimGate === "claim" ? <button type="button" disabled={gateBusy} onClick={() => void onClaim()} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold disabled:opacity-50">{gateBusy ? "Confirm in wallet…" : "Claim reward"}</button> : null}
           {claimGate === "error" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold">Retry</button> : null}
