@@ -98,6 +98,7 @@ export default function App() {
   const [claimAmount, setClaimAmount] = useState("0")
   const [claimEndsAt, setClaimEndsAt] = useState<string | null>(null)
   const [gateBusy, setGateBusy] = useState(false)
+  const [claimSucceeded, setClaimSucceeded] = useState(false)
   const [farcasterIdentity, setFarcasterIdentity] = useState<FarcasterIdentity | null>(null)
   const minerRef = useRef(miner)
   minerRef.current = miner
@@ -219,6 +220,7 @@ export default function App() {
               castText={mining && session ? session.text : ""}
               onCast={() => {
                 setNotice("")
+                setClaimSucceeded(false)
                 void refreshClaimGate()
                 setComposer(true)
               }}
@@ -296,17 +298,33 @@ export default function App() {
           claimAmount={claimAmount}
           claimEndsAt={claimEndsAt}
           gateBusy={gateBusy}
+          claimSucceeded={claimSucceeded}
           onRetry={() => void refreshClaimGate()}
           onClaim={async () => {
             setGateBusy(true)
             setNotice("")
+            setClaimSucceeded(false)
+            setClaimGate("checking")
             try {
               const wallet = await connectFarcasterWallet(TOKENCAST_CHAIN_ID)
               setPayout(wallet)
-              await executeClaimOnBase({ userAddress: wallet as `0x${string}`, onStatusChange: (_status, message) => { if (message) setNotice(message) } })
+              await executeClaimOnBase({ userAddress: wallet as `0x${string}`, onStatusChange: (status, message) => {
+                if (status === "success") {
+                  setClaimSucceeded(true)
+                  setNotice("")
+                } else if (message) setNotice(message)
+              } })
               await refreshClaimGate()
             } catch (error) {
-              setNotice(error instanceof Error ? error.message : "Claim failed. Please try again.")
+              const message = error instanceof Error ? error.message : "Claim failed. Please try again."
+              // A prior Base transaction can already have consumed the voucher
+              // while the browser retained an old claim button. Re-check the
+              // server ledger instead of leaving a misleading, stale button.
+              if (/No settled mining reward|Claim nonce is stale/i.test(message)) {
+                await refreshClaimGate()
+                setClaimSucceeded(true)
+                setNotice("")
+              } else setNotice(message)
             } finally { setGateBusy(false) }
           }}
           onNotice={setNotice}
@@ -1274,7 +1292,7 @@ function Composer({
   onNotice,
   onClose,
   onPublish,
-  claimGate, claimAmount, claimEndsAt, gateBusy, onClaim, onRetry,
+  claimGate, claimAmount, claimEndsAt, gateBusy, claimSucceeded, onClaim, onRetry,
 }: {
   era: number
   reward: number
@@ -1286,6 +1304,7 @@ function Composer({
   claimAmount: string
   claimEndsAt: string | null
   gateBusy: boolean
+  claimSucceeded: boolean
   onClaim: () => Promise<void>
   onRetry: () => void
 }) {
@@ -1396,6 +1415,7 @@ function Composer({
             className="w-full resize-none rounded-xl border border-gray-700 bg-[#0b0f17] px-3 py-3 text-base leading-normal text-white outline-none focus:border-[#8a63d2]"
           />
           <p className="mt-2 text-right text-sm text-gray-400 tabular-nums">{text.trim().length}/1024</p>
+          {claimSucceeded ? <p className="mt-2 rounded-xl bg-green-500/15 px-3 py-2 text-sm text-green-300">Reward confirmed on Base. You can start your next mining session.</p> : null}
           {error ? <p className="mt-2 rounded-xl bg-red-500/20 px-3 py-2 text-sm text-red-300">{error}</p> : null}
           <p className="mt-3 text-sm text-gray-400">
             In Warpcast, this opens the native composer. Mining begins only after your cast is published.

@@ -90,17 +90,25 @@ export async function executeClaimOnBase({
     onStatusChange("sending_tx", "Transaction sent. Waiting for Base confirmation...");
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") throw new Error("Claim transaction reverted on Base.");
-    const confirmation = await farcasterFetch("/api/claim/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userAddress: account, nonce: nonce.toString(), transactionHash: hash }),
-    });
-    const confirmationData = await confirmation.json();
-    if (!confirmation.ok || !confirmationData.confirmed) {
-      throw new Error(confirmationData.error || "Base claim could not be confirmed by the mining ledger.");
+    // Base is the source of truth. A temporary ledger callback failure must
+    // never make a mined, successful wallet transaction look like a failed
+    // claim. The next eligibility refresh reconciles it through userNonces.
+    let ledgerSynced = false;
+    try {
+      const confirmation = await farcasterFetch("/api/claim/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userAddress: account, nonce: nonce.toString(), transactionHash: hash }),
+      });
+      const confirmationData = await confirmation.json();
+      ledgerSynced = Boolean(confirmation.ok && confirmationData.confirmed);
+    } catch {
+      // Reconciliation runs automatically during the next eligibility check.
     }
 
-    onStatusChange("success", `Claim thành công! Tx Hash: ${hash}`);
+    onStatusChange("success", ledgerSynced
+      ? `Claim confirmed on Base! Tx: ${hash}`
+      : `Claim confirmed on Base. Syncing your mining ledger… Tx: ${hash}`);
     return hash;
   } catch (error: any) {
     onStatusChange("error", error.message || "Giao dịch thất bại.");
