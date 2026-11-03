@@ -1296,6 +1296,7 @@ function Composer({
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState("")
+  const [activeClock, setActiveClock] = useState(() => Date.now())
   const busyRef = useRef(false)
   const closeRef = useRef(onClose)
   busyRef.current = busy
@@ -1310,8 +1311,17 @@ function Composer({
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
+  useEffect(() => {
+    if (claimGate !== "active" || !claimEndsAt) return
+    setActiveClock(Date.now())
+    const interval = window.setInterval(() => setActiveClock(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [claimGate, claimEndsAt])
+
   const error = localError || notice
   const tooLong = text.trim().length > 1024
+  const activeEndsAt = claimEndsAt ? Date.parse(claimEndsAt) : Number.NaN
+  const activeRemaining = Number.isFinite(activeEndsAt) ? Math.max(0, activeEndsAt - activeClock) : 0
 
   return (
     <div
@@ -1345,9 +1355,14 @@ function Composer({
           </button>
         </div>
         {claimGate !== "cast" ? <div className="mt-4 space-y-3">
-          <p className="text-sm text-gray-300">{claimGate === "checking" ? "Checking your mining reward…" : claimGate === "active" ? `Your server-verified mining session is still active${claimEndsAt ? ` until ${new Date(claimEndsAt).toLocaleString()}` : ""}. Reward becomes claimable after it ends.` : claimGate === "claim" ? `Claim your verified reward before your next cast: ${formatTokens(Number(BigInt(claimAmount)) / 1e18)} ${TOKEN_SYMBOL}` : "Could not check your reward."}</p>
+          {claimGate === "active" ? <div className="rounded-xl border border-[#8a63d2]/40 bg-[#8a63d2]/10 p-4 text-center">
+            <p className="text-sm text-gray-300">Server-verified mining session active</p>
+            <p className="mt-1 text-3xl font-bold tabular-nums text-[#c4b5fd]">{formatClock(activeRemaining)}</p>
+            <p className="mt-1 text-sm text-gray-400">remaining until your reward can be claimed</p>
+          </div> : <p className="text-sm text-gray-300">{claimGate === "checking" ? "Checking your mining reward…" : claimGate === "claim" ? `Claim your verified reward before your next cast: ${formatTokens(Number(BigInt(claimAmount)) / 1e18)} ${TOKEN_SYMBOL}` : "Could not check your reward."}</p>}
           {notice ? <p className="text-sm text-red-400">{notice}</p> : null}
           {claimGate === "claim" ? <button type="button" disabled={gateBusy} onClick={() => void onClaim()} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold disabled:opacity-50">{gateBusy ? "Confirm in wallet…" : "Claim reward"}</button> : null}
+          {claimGate === "active" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl border border-[#8a63d2]/60 font-semibold text-[#c4b5fd]">Refresh reward status</button> : null}
           {claimGate === "error" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold">Retry</button> : null}
         </div> : <form
           className="mt-3"
