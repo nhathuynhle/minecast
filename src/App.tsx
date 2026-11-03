@@ -94,6 +94,9 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [composer, setComposer] = useState(false)
   const [notice, setNotice] = useState("")
+  const [claimGate, setClaimGate] = useState<"checking" | "claim" | "cast" | "error">("checking")
+  const [claimAmount, setClaimAmount] = useState("0")
+  const [gateBusy, setGateBusy] = useState(false)
   const [farcasterIdentity, setFarcasterIdentity] = useState<FarcasterIdentity | null>(null)
   const minerRef = useRef(miner)
   minerRef.current = miner
@@ -164,6 +167,20 @@ export default function App() {
     setMiner((current) => ({ ...current, payout: next }))
   }
 
+  async function refreshClaimGate() {
+    setClaimGate("checking")
+    try {
+      const response = await farcasterFetch("/api/mine/eligibility")
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || "Unable to check your reward.")
+      setClaimAmount(data.amountWei || "0")
+      setClaimGate(data.eligible ? "cast" : "claim")
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to check your reward.")
+      setClaimGate("error")
+    }
+  }
+
   return (
     <div className="min-h-dvh bg-[#0b0f17] text-[#f3f4f6]">
       <div className="h-1 bg-[#8a63d2]" />
@@ -200,6 +217,7 @@ export default function App() {
               castText={mining && session ? session.text : ""}
               onCast={() => {
                 setNotice("")
+                void refreshClaimGate()
                 setComposer(true)
               }}
             />
@@ -272,6 +290,22 @@ export default function App() {
           reward={quote.reward}
           onClose={() => setComposer(false)}
           notice={notice}
+          claimGate={claimGate}
+          claimAmount={claimAmount}
+          gateBusy={gateBusy}
+          onRetry={() => void refreshClaimGate()}
+          onClaim={async () => {
+            setGateBusy(true)
+            setNotice("")
+            try {
+              const wallet = await connectFarcasterWallet(TOKENCAST_CHAIN_ID)
+              setPayout(wallet)
+              await executeClaimOnBase({ userAddress: wallet as `0x${string}`, onStatusChange: (_status, message) => { if (message) setNotice(message) } })
+              await refreshClaimGate()
+            } catch (error) {
+              setNotice(error instanceof Error ? error.message : "Claim failed. Please try again.")
+            } finally { setGateBusy(false) }
+          }}
           onNotice={setNotice}
           onPublish={async (text) => {
             const current = minerRef.current
@@ -1049,7 +1083,7 @@ function DaoPanel() {
         <div>
           <p className="flex items-center gap-2 text-sm font-semibold text-[#c4b5fd]"><Vote className="size-4" /> Community governance</p>
           <h2 className="mt-1 text-xl font-bold text-white">MineCast DAO</h2>
-          <p className="mt-1 text-sm text-gray-400">TOKENCAST holders vote Yes or No using delegated balance at the proposal snapshot.</p>
+          <p className="mt-1 text-sm text-gray-400">Only TOKENCAST staked and activated for 30+ days votes Yes or No at the onchain snapshot.</p>
         </div>
         <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${DAO_IS_DEPLOYED ? "bg-green-500/15 text-green-300" : "bg-amber-500/15 text-amber-200"}`}>
           {DAO_IS_DEPLOYED ? "V3 live" : "V3 pending"}
@@ -1059,20 +1093,20 @@ function DaoPanel() {
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
           <p className="text-sm text-gray-400">Community airdrop</p>
-          <p className="mt-1 font-semibold text-white">Max 10% monthly emission</p>
-          <p className="mt-1 text-xs text-gray-500">Proposal opens on the 1st UTC; requires immutable policy, public snapshot and 3-of-5 signer attestation.</p>
+            <p className="mt-1 font-semibold text-white">Odd months · 10% of prior miners’ total</p>
+            <p className="mt-1 text-xs text-gray-500">Every miner claims directly on Base by their finalized share of the previous month’s mining. No Merkle list or signer committee.</p>
         </div>
         <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
           <p className="text-sm text-gray-400">Treasury burn</p>
-          <p className="mt-1 font-semibold text-white">Max 5% monthly emission</p>
-          <p className="mt-1 text-xs text-gray-500">Proposal opens on the 15th UTC; can only burn Community Treasury TOKENCAST.</p>
+            <p className="mt-1 font-semibold text-white">Even months · 5% of prior miners’ total</p>
+            <p className="mt-1 text-xs text-gray-500">A passed vote can only burn TOKENCAST already held by the Community Treasury.</p>
         </div>
       </div>
 
       {!DAO_IS_DEPLOYED ? (
         <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
           <p className="font-semibold text-amber-100">Voting opens after V3 deployment</p>
-          <p className="mt-1 text-sm text-amber-100/80">This is intentionally not a fake vote button. After the V3 governance address is configured, this tab reads proposals and submits Base transactions through your Farcaster wallet.</p>
+          <p className="mt-1 text-sm text-amber-100/80">This is intentionally not a fake vote button. After V3 is deployed, this tab reads the single fixed monthly proposal and submits your Base vote through your Farcaster wallet.</p>
         </div>
       ) : (
         <>
@@ -1084,17 +1118,17 @@ function DaoPanel() {
           </div>
 
           <div className="mt-3 grid gap-3">
-            {proposals.length === 0 ? <p className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4 text-sm text-gray-400">No active or current-epoch DAO proposal.</p> : null}
+            {proposals.length === 0 ? <p className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4 text-sm text-gray-400">No current-month DAO vote. A finalized previous mining month is required before the fixed vote opens.</p> : null}
             {proposals.map((proposal) => (
               <article key={proposal.id.toString()} className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold text-white">{proposal.kind}</p>
-                    <p className="mt-1 text-sm text-gray-400">{String(proposal.calendarMonth).slice(0, 4)}-{String(proposal.calendarMonth).slice(-2)} · {formatTokens(Number(proposal.amount))} {TOKEN_SYMBOL}</p>
+                    <p className="mt-1 text-sm text-gray-400">Vote month {String(proposal.calendarMonth).slice(0, 4)}-{String(proposal.calendarMonth).slice(-2)} · mining basis {String(proposal.targetCalendarMonth).slice(0, 4)}-{String(proposal.targetCalendarMonth).slice(-2)} · {formatTokens(Number(proposal.amount))} {TOKEN_SYMBOL}</p>
                   </div>
                   <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${proposal.active ? "bg-green-500/15 text-green-300" : "bg-gray-700 text-gray-300"}`}>{proposal.active ? "Voting open" : "Voting closed"}</span>
                 </div>
-                <p className="mt-3 text-xs text-gray-500">Yes {formatTokens(Number(proposal.yesVotes))} · No {formatTokens(Number(proposal.noVotes))} · ends at Base block {proposal.deadlineBlock.toString()}</p>
+                <p className="mt-3 text-xs text-gray-500">Yes {formatTokens(Number(proposal.yesVotes))} · No {formatTokens(Number(proposal.noVotes))} · the higher side wins; tie means no action · ends at Base block {proposal.deadlineBlock.toString()}</p>
                 <div className="mt-4 grid grid-cols-2 gap-2">
                   <button type="button" onClick={() => void vote(proposal, true)} disabled={!proposal.active || votingId !== null || proposal.voted} className="h-11 rounded-xl bg-green-500/80 text-sm font-semibold text-white disabled:opacity-50">{votingId === proposal.id ? "Confirm in wallet…" : proposal.voted ? "Already voted" : "Vote Yes"}</button>
                   <button type="button" onClick={() => void vote(proposal, false)} disabled={!proposal.active || votingId !== null || proposal.voted} className="h-11 rounded-xl bg-red-500/80 text-sm font-semibold text-white disabled:opacity-50">Vote No</button>
@@ -1237,6 +1271,7 @@ function Composer({
   onNotice,
   onClose,
   onPublish,
+  claimGate, claimAmount, gateBusy, onClaim, onRetry,
 }: {
   era: number
   reward: number
@@ -1244,6 +1279,11 @@ function Composer({
   onNotice: (value: string) => void
   onClose: () => void
   onPublish: (text: string) => Promise<boolean>
+  claimGate: "checking" | "claim" | "cast" | "error"
+  claimAmount: string
+  gateBusy: boolean
+  onClaim: () => Promise<void>
+  onRetry: () => void
 }) {
   const titleId = useId()
   const field = useRef<HTMLTextAreaElement>(null)
@@ -1300,7 +1340,12 @@ function Composer({
             <X className="size-5" />
           </button>
         </div>
-        <form
+        {claimGate !== "cast" ? <div className="mt-4 space-y-3">
+          <p className="text-sm text-gray-300">{claimGate === "checking" ? "Checking your mining reward…" : claimGate === "claim" ? `Claim your verified reward before your next cast: ${formatTokens(Number(BigInt(claimAmount)) / 1e18)} ${TOKEN_SYMBOL}` : "Could not check your reward."}</p>
+          {notice ? <p className="text-sm text-red-400">{notice}</p> : null}
+          {claimGate === "claim" ? <button type="button" disabled={gateBusy} onClick={() => void onClaim()} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold disabled:opacity-50">{gateBusy ? "Confirm in wallet…" : "Claim reward"}</button> : null}
+          {claimGate === "error" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold">Retry</button> : null}
+        </div> : <form
           className="mt-3"
           onSubmit={(event) => {
             event.preventDefault()
@@ -1344,7 +1389,7 @@ function Composer({
             <Send className="size-4" />
             {busy ? "Posting cast…" : "Post Cast & Mine for 24h"}
           </button>
-        </form>
+        </form>}
       </div>
     </div>
   )

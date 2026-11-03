@@ -3,163 +3,167 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
-import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {MineCastCalendar} from "./MineCastCalendar.sol";
 
-interface IMineCastAirdropSnapshotAttestor {
-    function validateAirdrop(
-        uint256 epoch,
-        bytes32 merkleRoot,
-        bytes32 policyHash,
-        bytes32 snapshotHash,
-        uint256 amount,
-        uint32 claimDuration,
-        bytes[] calldata signatures
-    ) external view;
-}
-
-/// @dev Minimal Gregorian UTC conversion for calendar-governed proposal windows.
-library MineCastCalendar {
-    function yearMonthDay(uint256 timestamp) internal pure returns (uint256 year, uint256 month, uint256 day) {
-        int256 l = int256(timestamp / 1 days) + 68569 + 2440588;
-        int256 n = 4 * l / 146097;
-        l = l - (146097 * n + 3) / 4;
-        int256 i = 4000 * (l + 1) / 1461001;
-        l = l - 1461 * i / 4 + 31;
-        int256 j = 80 * l / 2447;
-        day = uint256(l - 2447 * j / 80);
-        l = j / 11;
-        month = uint256(j + 2 - 12 * l);
-        year = uint256(100 * (n - 49) + i + l);
-    }
-}
-
-/// @notice Token interface required by MineCast's constrained monthly DAO.
-/// @dev TokenCast V3 must implement ERC20Votes and expose its immutable emission schedule.
-interface ITokenCastVotes is IERC20, IVotes {
+interface ITokenCastTreasury is IERC20 {
     function launchTime() external view returns (uint64);
-    function monthlyEmissionForEpoch(uint256 epoch) external view returns (uint256);
     function burn(uint256 value) external;
 }
 
-/// @notice Holds a single, governance-approved airdrop round and lets each wallet claim once.
-contract MineCastAirdropDistributor is ReentrancyGuard {
+interface IMineCastMiningTotals {
+    function monthFinalized(uint256 calendarMonth) external view returns (bool);
+    function finalizedTotalMinedByCalendarMonth(uint256 calendarMonth) external view returns (uint256);
+    function minedByCalendarMonth(uint256 calendarMonth, address miner) external view returns (uint256);
+}
+
+interface IMineCastStakeVotes {
+    function votingPowerAt(address account, uint256 blockNumber) external view returns (uint256);
+}
+
+/// @notice Holds one fixed monthly miner airdrop and lets eligible miners claim directly onchain.
+/// @dev There is no Merkle root, signer set, backend callback, or operator-selected recipient list.
+///      A miner's claim is exactly their finalized mined share for the target calendar month.
+contract MineCastMonthlyMinerAirdrop is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     struct Round {
-        bytes32 merkleRoot;
-        uint256 totalAmount;
-        uint256 claimedAmount;
+        uint32 targetCalendarMonth;
         uint64 claimStart;
         uint64 claimEnd;
+        uint256 totalMined;
+        uint256 totalAmount;
+        uint256 claimedAmount;
         bool swept;
     }
 
     IERC20 public immutable token;
+    IMineCastMiningTotals public mining;
     address public treasury;
     address public bootstrapAdmin;
     uint256 public nextRoundId;
+
     mapping(uint256 roundId => Round) public rounds;
-    mapping(uint256 roundId => mapping(address account => bool)) public claimed;
+    mapping(uint256 targetCalendarMonth => uint256 roundId) public roundForMiningMonth;
+    mapping(uint256 roundId => mapping(address miner => bool)) public claimed;
 
-    event RoundCreated(uint256 indexed roundId, bytes32 indexed merkleRoot, uint256 totalAmount, uint64 claimStart, uint64 claimEnd);
-    event Claimed(uint256 indexed roundId, address indexed account, uint256 amount);
-    event RoundSwept(uint256 indexed roundId, uint256 amount);
+    event TreasurySet(address indexed treasury);
+    event MiningDistributorSet(address indexed miningDistributor);
+    event MinerRoundCreated(uint256 indexed roundId, uint256 indexed targetCalendarMonth, uint256 totalAmount, uint256 totalMined, uint64 claimEnd);
+    event MinerAirdropClaimed(uint256 indexed roundId, address indexed miner, uint256 amount);
+    event MinerRoundSwept(uint256 indexed roundId, uint256 amount);
 
-    error OnlyTreasury();
+    error InvalidConfiguration();
     error OnlyBootstrapAdmin();
+    error OnlyTreasury();
     error InvalidRound();
+    error MiningMonthNotFinalized();
+    error RoundAlreadyExists();
     error ClaimNotOpen();
     error AlreadyClaimed();
-    error InvalidProof();
-    error RecipientCapExceeded();
+    error NothingToClaim();
     error RoundNotExpired();
     error AlreadySwept();
 
     constructor(IERC20 token_, address bootstrapAdmin_) {
-        if (address(token_) == address(0) || bootstrapAdmin_ == address(0)) revert InvalidRound();
+        if (address(token_) == address(0) || bootstrapAdmin_ == address(0)) {
+            revert InvalidConfiguration();
+        }
         token = token_;
         bootstrapAdmin = bootstrapAdmin_;
     }
 
-    /// @dev One-time bootstrap step avoids a circular deployment dependency with Treasury.
-    function setTreasury(address treasury_) external {
+    /// @dev One-time bootstrap wiring resolves the Treasury/Daily Distributor deployment cycle.
+    function setMiningDistributor(IMineCastMiningTotals mining_) external {
         if (msg.sender != bootstrapAdmin) revert OnlyBootstrapAdmin();
-        if (treasury != address(0) || treasury_ == address(0)) revert InvalidRound();
-        treasury = treasury_;
-        bootstrapAdmin = address(0);
+        if (address(mining) != address(0) || address(mining_) == address(0)) revert InvalidConfiguration();
+        mining = mining_;
+        emit MiningDistributorSet(address(mining_));
     }
 
-    /// @dev The Treasury transfers tokens before this call. A revert rolls both actions back.
+    /// @dev One bootstrap call resolves the Treasury/Distributor deployment cycle then removes the EOA authority.
+    function setTreasury(address treasury_) external {
+        if (msg.sender != bootstrapAdmin) revert OnlyBootstrapAdmin();
+        if (treasury != address(0) || treasury_ == address(0) || address(mining) == address(0)) revert InvalidConfiguration();
+        treasury = treasury_;
+        bootstrapAdmin = address(0);
+        emit TreasurySet(treasury_);
+    }
+
+    /// @notice Starts a fixed direct-claim round after the prior mining month has been permanently finalized.
     function createRound(
-        bytes32 merkleRoot,
+        uint256 targetCalendarMonth,
         uint256 totalAmount,
         uint64 claimStart,
         uint64 claimEnd
     ) external returns (uint256 roundId) {
         if (msg.sender != treasury || treasury == address(0)) revert OnlyTreasury();
-        if (merkleRoot == bytes32(0) || totalAmount == 0 || claimStart < block.timestamp || claimEnd <= claimStart || claimEnd - claimStart > 90 days) {
+        if (!mining.monthFinalized(targetCalendarMonth)) revert MiningMonthNotFinalized();
+        if (roundForMiningMonth[targetCalendarMonth] != 0) revert RoundAlreadyExists();
+        if (totalAmount == 0 || claimStart < block.timestamp || claimEnd <= claimStart || claimEnd - claimStart > 90 days) {
             revert InvalidRound();
         }
 
-        roundId = nextRoundId++;
+        uint256 totalMined = mining.finalizedTotalMinedByCalendarMonth(targetCalendarMonth);
+        if (totalMined == 0) revert NothingToClaim();
+        roundId = ++nextRoundId;
         rounds[roundId] = Round({
-            merkleRoot: merkleRoot,
-            totalAmount: totalAmount,
-            claimedAmount: 0,
+            targetCalendarMonth: uint32(targetCalendarMonth),
             claimStart: claimStart,
             claimEnd: claimEnd,
+            totalMined: totalMined,
+            totalAmount: totalAmount,
+            claimedAmount: 0,
             swept: false
         });
-        emit RoundCreated(roundId, merkleRoot, totalAmount, claimStart, claimEnd);
+        roundForMiningMonth[targetCalendarMonth] = roundId;
+        emit MinerRoundCreated(roundId, targetCalendarMonth, totalAmount, totalMined, claimEnd);
     }
 
-    function claim(uint256 roundId, uint256 amount, bytes32[] calldata proof) external nonReentrant {
+    /// @notice Claims `roundAmount * minerMined / finalizedMonthMined`, rounded down once.
+    function claim(uint256 roundId) external nonReentrant returns (uint256 amount) {
         Round storage round = rounds[roundId];
-        if (round.merkleRoot == bytes32(0)) revert InvalidRound();
+        if (round.totalAmount == 0) revert InvalidRound();
         if (block.timestamp < round.claimStart || block.timestamp > round.claimEnd) revert ClaimNotOpen();
         if (claimed[roundId][msg.sender]) revert AlreadyClaimed();
 
-        // A 0.1% recipient ceiling forces every community campaign to be broad.
-        if (amount == 0 || amount > round.totalAmount / 1_000) revert RecipientCapExceeded();
-        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(roundId, msg.sender, amount))));
-        if (!MerkleProof.verifyCalldata(proof, round.merkleRoot, leaf)) revert InvalidProof();
-        if (round.claimedAmount + amount > round.totalAmount) revert RecipientCapExceeded();
+        uint256 minerMined = mining.minedByCalendarMonth(round.targetCalendarMonth, msg.sender);
+        amount = round.totalAmount * minerMined / round.totalMined;
+        if (amount == 0) revert NothingToClaim();
 
         claimed[roundId][msg.sender] = true;
         round.claimedAmount += amount;
         token.safeTransfer(msg.sender, amount);
-        emit Claimed(roundId, msg.sender, amount);
+        emit MinerAirdropClaimed(roundId, msg.sender, amount);
     }
 
-    /// @notice Returns unclaimed tokens to the Community Treasury after the fixed claim window.
+    /// @notice Unclaimed and integer-rounding dust returns only to the DAO Treasury after 90 days.
     function sweep(uint256 roundId) external nonReentrant {
         Round storage round = rounds[roundId];
-        if (round.merkleRoot == bytes32(0)) revert InvalidRound();
+        if (round.totalAmount == 0) revert InvalidRound();
         if (block.timestamp <= round.claimEnd) revert RoundNotExpired();
         if (round.swept) revert AlreadySwept();
 
         round.swept = true;
         uint256 remainder = round.totalAmount - round.claimedAmount;
         token.safeTransfer(treasury, remainder);
-        emit RoundSwept(roundId, remainder);
+        emit MinerRoundSwept(roundId, remainder);
     }
 }
 
-/// @notice Holds community tokens. It cannot make arbitrary transfers after bootstrap is locked.
+/// @notice Holds community-issued TOKENCAST. After bootstrap it can only fund a passed miner airdrop or burn itself.
 contract MineCastCommunityTreasury {
     using SafeERC20 for IERC20;
 
-    ITokenCastVotes public immutable token;
-    MineCastAirdropDistributor public immutable distributor;
+    ITokenCastTreasury public immutable token;
+    MineCastMonthlyMinerAirdrop public immutable minerAirdrop;
     address public bootstrapAdmin;
     address public governance;
     bool public governanceLocked;
 
     event GovernanceSet(address indexed governance);
     event GovernanceLocked(address indexed governance);
-    event AirdropFunded(uint256 indexed proposalId, uint256 indexed roundId, uint256 amount);
+    event MinerAirdropFunded(uint256 indexed proposalId, uint256 indexed roundId, uint256 amount);
     event Burned(uint256 indexed proposalId, uint256 amount);
 
     error OnlyBootstrapAdmin();
@@ -167,10 +171,12 @@ contract MineCastCommunityTreasury {
     error GovernanceAlreadyLocked();
     error InvalidAddress();
 
-    constructor(ITokenCastVotes token_, MineCastAirdropDistributor distributor_, address bootstrapAdmin_) {
-        if (address(token_) == address(0) || address(distributor_) == address(0) || bootstrapAdmin_ == address(0)) revert InvalidAddress();
+    constructor(ITokenCastTreasury token_, MineCastMonthlyMinerAirdrop minerAirdrop_, address bootstrapAdmin_) {
+        if (address(token_) == address(0) || address(minerAirdrop_) == address(0) || bootstrapAdmin_ == address(0)) {
+            revert InvalidAddress();
+        }
         token = token_;
-        distributor = distributor_;
+        minerAirdrop = minerAirdrop_;
         bootstrapAdmin = bootstrapAdmin_;
     }
 
@@ -184,13 +190,13 @@ contract MineCastCommunityTreasury {
         _;
     }
 
-    /// @dev One setup call after the DAO is deployed, then permanently lock bootstrap authority.
     function setGovernance(address governance_) external onlyBootstrapAdmin {
         if (governanceLocked || governance_ == address(0)) revert GovernanceAlreadyLocked();
         governance = governance_;
         emit GovernanceSet(governance_);
     }
 
+    /// @notice Permanently removes the deployment wallet's Treasury authority.
     function lockGovernance() external onlyBootstrapAdmin {
         if (governanceLocked || governance == address(0)) revert GovernanceAlreadyLocked();
         governanceLocked = true;
@@ -198,41 +204,39 @@ contract MineCastCommunityTreasury {
         emit GovernanceLocked(governance);
     }
 
-    function fundAirdrop(
+    function fundMinerAirdrop(
         uint256 proposalId,
-        bytes32 merkleRoot,
+        uint256 targetCalendarMonth,
         uint256 amount,
         uint64 claimStart,
         uint64 claimEnd
     ) external onlyGovernance returns (uint256 roundId) {
-        IERC20(address(token)).safeTransfer(address(distributor), amount);
-        roundId = distributor.createRound(merkleRoot, amount, claimStart, claimEnd);
-        emit AirdropFunded(proposalId, roundId, amount);
+        IERC20(address(token)).safeTransfer(address(minerAirdrop), amount);
+        roundId = minerAirdrop.createRound(targetCalendarMonth, amount, claimStart, claimEnd);
+        emit MinerAirdropFunded(proposalId, roundId, amount);
     }
 
-    /// @dev ERC20Burnable burns from msg.sender, which is this Treasury contract.
     function burn(uint256 proposalId, uint256 amount) external onlyGovernance {
         token.burn(amount);
         emit Burned(proposalId, amount);
     }
 }
 
-/// @notice A constrained, non-upgradeable TOKENCAST governance engine.
-/// @dev It intentionally supports only two yes/no actions each calendar month: airdrop on the 1st and burn on the 15th UTC.
+/// @notice One deterministic, stake-weighted Yes/No vote each calendar month.
+/// @dev Odd months vote a direct airdrop to the previous completed mining month. Even months vote a burn.
+///      There is intentionally no quorum: a proposal passes only when Yes is strictly greater than No; a tie,
+///      no turnout, or No majority simply does nothing. No caller chooses recipients, policy, or amount.
 contract MineCastMonthlyGovernance {
-    enum ProposalKind { Airdrop, Burn }
+    enum ProposalKind { MinerAirdrop, TreasuryBurn }
 
     struct Proposal {
         ProposalKind kind;
-        uint64 epoch;
         uint32 calendarMonth;
+        uint32 targetCalendarMonth;
         uint64 snapshotBlock;
         uint64 deadlineBlock;
         uint64 executeAfter;
         uint32 claimDuration;
-        bytes32 merkleRoot;
-        bytes32 policyHash;
-        bytes32 snapshotHash;
         uint256 amount;
         uint256 yesVotes;
         uint256 noVotes;
@@ -240,84 +244,80 @@ contract MineCastMonthlyGovernance {
     }
 
     uint256 public constant BPS_DENOMINATOR = 10_000;
-    uint256 public constant AIRDROP_BPS = 1_000; // 10% of each epoch's scheduled emission.
-    uint256 public constant BURN_BPS = 500; // 5% of each epoch's scheduled emission.
-    uint256 public constant QUORUM_BPS = 500; // 5% of snapshot total supply.
-    uint256 public constant PROPOSAL_THRESHOLD_BPS = 25; // 0.25% of snapshot total supply.
-    uint256 public constant EPOCH_LENGTH = 30 days;
-    uint256 public constant VOTING_DELAY_BLOCKS = 43_200; // ~1 day on Base.
-    uint256 public constant VOTING_PERIOD_BLOCKS = 302_400; // ~7 days on Base.
+    uint256 public constant AIRDROP_BPS = 1_000;
+    uint256 public constant BURN_BPS = 500;
+    uint256 public constant VOTING_DELAY_BLOCKS = 43_200;
+    uint256 public constant VOTING_PERIOD_BLOCKS = 302_400;
     uint256 public constant EXECUTION_TIMELOCK = 72 hours;
+    uint32 public constant AIRDROP_CLAIM_DURATION = 90 days;
+    uint256 public constant VOTE_OPEN_DAY = 8;
+    uint256 public constant VOTE_CLOSE_DAY = 21;
 
-    ITokenCastVotes public immutable token;
+    ITokenCastTreasury public immutable token;
     MineCastCommunityTreasury public immutable treasury;
-    IMineCastAirdropSnapshotAttestor public immutable snapshotAttestor;
+    IMineCastMiningTotals public immutable mining;
+    IMineCastStakeVotes public immutable staking;
     uint64 public immutable launchTime;
-    bytes32 public immutable airdropPolicyHash;
     uint256 public nextProposalId = 1;
+
     mapping(uint256 proposalId => Proposal) private _proposals;
-    mapping(uint256 calendarMonth => mapping(ProposalKind kind => uint256 proposalId)) public proposalForMonth;
+    mapping(uint256 calendarMonth => uint256 proposalId) public proposalForMonth;
     mapping(uint256 proposalId => mapping(address voter => bool)) public hasVoted;
 
-    event ProposalCreated(
-        uint256 indexed proposalId,
-        ProposalKind indexed kind,
-        uint256 indexed epoch,
-        uint256 calendarMonth,
-        uint256 amount
-    );
+    event ProposalCreated(uint256 indexed proposalId, ProposalKind indexed kind, uint256 indexed calendarMonth, uint256 targetCalendarMonth, uint256 amount);
     event VoteCast(uint256 indexed proposalId, address indexed voter, bool support, uint256 weight);
     event ProposalQueued(uint256 indexed proposalId, uint256 executeAfter);
     event ProposalExecuted(uint256 indexed proposalId, uint256 roundId);
 
+    error InvalidConfiguration();
+    error NotLaunched();
+    error ProposalWindowClosed();
     error ProposalExists();
-    error InvalidEpoch();
+    error MiningMonthNotFinalized();
+    error TreasuryBalanceTooLow();
     error InvalidProposal();
-    error ProposalThresholdNotMet();
     error VotingNotActive();
     error AlreadyVoted();
+    error ZeroVotingPower();
     error ProposalNotPassed();
     error TimelockActive();
     error AlreadyExecuted();
-    error InvalidAirdropConfiguration();
-    error TreasuryBalanceTooLow();
-    error NotLaunched();
-    error ProposalWindowClosed();
 
     constructor(
-        ITokenCastVotes token_,
+        ITokenCastTreasury token_,
         MineCastCommunityTreasury treasury_,
-        IMineCastAirdropSnapshotAttestor snapshotAttestor_,
-        uint64 launchTime_,
-        bytes32 airdropPolicyHash_
+        IMineCastMiningTotals mining_,
+        IMineCastStakeVotes staking_,
+        uint64 launchTime_
     ) {
         if (
-            address(token_) == address(0) || address(treasury_) == address(0) || address(snapshotAttestor_) == address(0)
-                || launchTime_ == 0 || airdropPolicyHash_ == bytes32(0)
-                || token_.launchTime() != launchTime_
-        ) revert InvalidProposal();
+            address(token_) == address(0) || address(treasury_) == address(0) || address(mining_) == address(0)
+                || address(staking_) == address(0) || launchTime_ == 0 || token_.launchTime() != launchTime_
+        ) revert InvalidConfiguration();
         token = token_;
         treasury = treasury_;
-        snapshotAttestor = snapshotAttestor_;
+        mining = mining_;
+        staking = staking_;
         launchTime = launchTime_;
-        airdropPolicyHash = airdropPolicyHash_;
     }
 
-    function currentEpoch() public view returns (uint256) {
-        if (block.timestamp <= launchTime) return 0;
-        return (block.timestamp - launchTime) / EPOCH_LENGTH;
-    }
-
-    /// @notice Calendar month identifier in UTC, e.g. 202611 for November 2026.
     function currentCalendarMonth() public view returns (uint256) {
-        (uint256 year, uint256 month,) = MineCastCalendar.yearMonthDay(block.timestamp);
-        return year * 100 + month;
+        return MineCastCalendar.currentMonthId();
     }
 
-    /// @notice The only two proposal-creation dates: community airdrop on day 1, burn on day 15 UTC.
-    function proposalWindowOpen(ProposalKind kind) public view returns (bool) {
+    function previousCalendarMonth() public view returns (uint256) {
+        return MineCastCalendar.previousMonthId();
+    }
+
+    function currentProposalKind() public view returns (ProposalKind) {
+        (, uint256 month,) = MineCastCalendar.yearMonthDay(block.timestamp);
+        return month % 2 == 1 ? ProposalKind.MinerAirdrop : ProposalKind.TreasuryBurn;
+    }
+
+    /// @notice Opens from UTC day 8 to 21, leaving seven days for daily mining claims to close and freeze.
+    function proposalWindowOpen() public view returns (bool) {
         (,, uint256 day) = MineCastCalendar.yearMonthDay(block.timestamp);
-        return day == (kind == ProposalKind.Airdrop ? 1 : 15);
+        return day >= VOTE_OPEN_DAY && day <= VOTE_CLOSE_DAY;
     }
 
     function proposalInfo(uint256 proposalId)
@@ -325,7 +325,7 @@ contract MineCastMonthlyGovernance {
         view
         returns (
             ProposalKind kind,
-            uint64 epoch,
+            uint32 targetCalendarMonth,
             uint32 calendarMonth,
             uint64 snapshotBlock,
             uint64 deadlineBlock,
@@ -337,7 +337,7 @@ contract MineCastMonthlyGovernance {
         Proposal storage proposal = _proposals[proposalId];
         return (
             proposal.kind,
-            proposal.epoch,
+            proposal.targetCalendarMonth,
             proposal.calendarMonth,
             proposal.snapshotBlock,
             proposal.deadlineBlock,
@@ -352,58 +352,62 @@ contract MineCastMonthlyGovernance {
         return (proposal.amount, proposal.yesVotes, proposal.noVotes);
     }
 
-    /// @notice Publicly exposes the committed data for an airdrop proposal.
-    /// @dev This keeps the Merkle root and attested policy independently verifiable without a large auto-generated getter.
-    function proposalAirdropData(uint256 proposalId)
-        external
-        view
-        returns (bytes32 merkleRoot, bytes32 policyHash, bytes32 snapshotHash, uint32 claimDuration)
-    {
-        Proposal storage proposal = _proposals[proposalId];
-        return (proposal.merkleRoot, proposal.policyHash, proposal.snapshotHash, proposal.claimDuration);
-    }
-
-    function createAirdropProposal(
-        bytes32 merkleRoot,
-        bytes32 snapshotHash,
-        uint32 claimDuration,
-        bytes[] calldata signatures
-    ) external returns (uint256 proposalId) {
+    /// @notice Permissionlessly opens the only action permitted for this calendar month.
+    function openMonthlyVote() external returns (uint256 proposalId) {
         if (block.timestamp < launchTime) revert NotLaunched();
-        if (merkleRoot == bytes32(0) || snapshotHash == bytes32(0) || claimDuration < 1 days || claimDuration > 90 days) {
-            revert InvalidAirdropConfiguration();
-        }
-        uint256 epoch = currentEpoch();
-        uint256 amount = _proposalAmount(ProposalKind.Airdrop, epoch);
-        snapshotAttestor.validateAirdrop(epoch, merkleRoot, airdropPolicyHash, snapshotHash, amount, claimDuration, signatures);
-        proposalId = _create(ProposalKind.Airdrop, merkleRoot, airdropPolicyHash, snapshotHash, claimDuration);
+        if (!proposalWindowOpen()) revert ProposalWindowClosed();
+
+        uint256 calendarMonth = currentCalendarMonth();
+        if (proposalForMonth[calendarMonth] != 0) revert ProposalExists();
+        uint256 targetCalendarMonth = previousCalendarMonth();
+        if (!mining.monthFinalized(targetCalendarMonth)) revert MiningMonthNotFinalized();
+
+        ProposalKind kind = currentProposalKind();
+        uint256 amount = _proposalAmount(kind, targetCalendarMonth);
+        proposalId = nextProposalId++;
+        uint64 snapshotBlock = uint64(block.number + VOTING_DELAY_BLOCKS);
+
+        _proposals[proposalId] = Proposal({
+            kind: kind,
+            calendarMonth: uint32(calendarMonth),
+            targetCalendarMonth: uint32(targetCalendarMonth),
+            snapshotBlock: snapshotBlock,
+            deadlineBlock: uint64(uint256(snapshotBlock) + VOTING_PERIOD_BLOCKS),
+            executeAfter: 0,
+            claimDuration: kind == ProposalKind.MinerAirdrop ? AIRDROP_CLAIM_DURATION : 0,
+            amount: amount,
+            yesVotes: 0,
+            noVotes: 0,
+            executed: false
+        });
+        proposalForMonth[calendarMonth] = proposalId;
+        emit ProposalCreated(proposalId, kind, calendarMonth, targetCalendarMonth, amount);
     }
 
-    function createBurnProposal() external returns (uint256 proposalId) {
-        proposalId = _create(ProposalKind.Burn, bytes32(0), bytes32(0), bytes32(0), 0);
-    }
-
+    /// @notice Votes with stake that completed its 30-day activation period before the immutable snapshot block.
     function castVote(uint256 proposalId, bool support) external returns (uint256 weight) {
         Proposal storage proposal = _proposals[proposalId];
-        if (proposal.snapshotBlock == 0 || block.number <= proposal.snapshotBlock || block.number > proposal.deadlineBlock) revert VotingNotActive();
+        if (proposal.snapshotBlock == 0 || block.number <= proposal.snapshotBlock || block.number > proposal.deadlineBlock) {
+            revert VotingNotActive();
+        }
         if (hasVoted[proposalId][msg.sender]) revert AlreadyVoted();
 
-        weight = token.getPastVotes(msg.sender, proposal.snapshotBlock);
+        weight = staking.votingPowerAt(msg.sender, proposal.snapshotBlock);
+        if (weight == 0) revert ZeroVotingPower();
         hasVoted[proposalId][msg.sender] = true;
         if (support) proposal.yesVotes += weight;
         else proposal.noVotes += weight;
         emit VoteCast(proposalId, msg.sender, support, weight);
     }
 
+    /// @notice A strict Yes majority passes. There is deliberately no participation quorum.
     function state(uint256 proposalId) public view returns (bool passed, bool executable) {
         Proposal storage proposal = _proposals[proposalId];
         if (proposal.snapshotBlock == 0) return (false, false);
-        uint256 quorum = token.getPastTotalSupply(proposal.snapshotBlock) * QUORUM_BPS / BPS_DENOMINATOR;
-        passed = block.number > proposal.deadlineBlock && proposal.yesVotes > proposal.noVotes && proposal.yesVotes + proposal.noVotes >= quorum;
+        passed = block.number > proposal.deadlineBlock && proposal.yesVotes > proposal.noVotes;
         executable = passed && !proposal.executed && proposal.executeAfter != 0 && block.timestamp >= proposal.executeAfter;
     }
 
-    /// @notice Starts the public 72-hour delay only after a proposal has passed.
     function queue(uint256 proposalId) external {
         Proposal storage proposal = _proposals[proposalId];
         if (proposal.snapshotBlock == 0) revert InvalidProposal();
@@ -424,63 +428,26 @@ contract MineCastMonthlyGovernance {
         if (!executable) revert TimelockActive();
 
         proposal.executed = true;
-        if (proposal.kind == ProposalKind.Airdrop) {
+        if (proposal.kind == ProposalKind.MinerAirdrop) {
             uint64 claimStart = uint64(block.timestamp);
-            uint64 claimEnd = claimStart + proposal.claimDuration;
-            roundId = treasury.fundAirdrop(proposalId, proposal.merkleRoot, proposal.amount, claimStart, claimEnd);
+            roundId = treasury.fundMinerAirdrop(
+                proposalId,
+                proposal.targetCalendarMonth,
+                proposal.amount,
+                claimStart,
+                claimStart + proposal.claimDuration
+            );
         } else {
             treasury.burn(proposalId, proposal.amount);
         }
         emit ProposalExecuted(proposalId, roundId);
     }
 
-    function _create(
-        ProposalKind kind,
-        bytes32 merkleRoot,
-        bytes32 policyHash,
-        bytes32 snapshotHash,
-        uint32 claimDuration
-    ) internal returns (uint256 proposalId) {
-        if (block.timestamp < launchTime) revert NotLaunched();
-        if (!proposalWindowOpen(kind)) revert ProposalWindowClosed();
-        uint256 epoch = currentEpoch();
-        uint256 calendarMonth = currentCalendarMonth();
-        if (proposalForMonth[calendarMonth][kind] != 0) revert ProposalExists();
-
-        _requireProposalThreshold(msg.sender);
-        uint256 amount = _proposalAmount(kind, epoch);
-
-        proposalId = nextProposalId++;
-        uint64 snapshotBlock = uint64(block.number + VOTING_DELAY_BLOCKS);
-        uint64 deadlineBlock = uint64(uint256(snapshotBlock) + VOTING_PERIOD_BLOCKS);
-        Proposal storage proposal = _proposals[proposalId];
-        proposal.kind = kind;
-        proposal.epoch = uint64(epoch);
-        proposal.calendarMonth = uint32(calendarMonth);
-        proposal.snapshotBlock = snapshotBlock;
-        proposal.deadlineBlock = deadlineBlock;
-        proposal.executeAfter = 0;
-        proposal.claimDuration = claimDuration;
-        proposal.merkleRoot = merkleRoot;
-        proposal.policyHash = policyHash;
-        proposal.snapshotHash = snapshotHash;
-        proposal.amount = amount;
-        proposalForMonth[calendarMonth][kind] = proposalId;
-        emit ProposalCreated(proposalId, kind, epoch, calendarMonth, amount);
-    }
-
-    function _requireProposalThreshold(address proposer) private view {
-        uint256 priorBlock = block.number - 1;
-        uint256 threshold = token.getPastTotalSupply(priorBlock) * PROPOSAL_THRESHOLD_BPS / BPS_DENOMINATOR;
-        if (token.getPastVotes(proposer, priorBlock) < threshold) revert ProposalThresholdNotMet();
-    }
-
-    function _proposalAmount(ProposalKind kind, uint256 epoch) private view returns (uint256 amount) {
-        uint256 rate = kind == ProposalKind.Airdrop ? AIRDROP_BPS : BURN_BPS;
-        amount = _min(
-            token.monthlyEmissionForEpoch(epoch) * rate / BPS_DENOMINATOR,
-            token.balanceOf(address(treasury))
-        );
+    function _proposalAmount(ProposalKind kind, uint256 targetCalendarMonth) private view returns (uint256 amount) {
+        uint256 mined = mining.finalizedTotalMinedByCalendarMonth(targetCalendarMonth);
+        if (mined == 0) revert MiningMonthNotFinalized();
+        uint256 rate = kind == ProposalKind.MinerAirdrop ? AIRDROP_BPS : BURN_BPS;
+        amount = _min(mined * rate / BPS_DENOMINATOR, token.balanceOf(address(treasury)));
         if (amount == 0) revert TreasuryBalanceTooLow();
     }
 

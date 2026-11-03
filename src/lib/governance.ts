@@ -20,7 +20,7 @@ const GOVERNANCE_ABI = [
   { type: "function", name: "currentCalendarMonth", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
   {
     type: "function", name: "proposalForMonth", stateMutability: "view",
-    inputs: [{ type: "uint256" }, { type: "uint8" }], outputs: [{ type: "uint256" }],
+    inputs: [{ type: "uint256" }], outputs: [{ type: "uint256" }],
   },
   {
     type: "function", name: "proposalInfo", stateMutability: "view", inputs: [{ type: "uint256" }],
@@ -44,8 +44,8 @@ const GOVERNANCE_ABI = [
 
 export type DaoProposal = {
   id: bigint
-  kind: "Community airdrop" | "Treasury burn"
-  epoch: number
+  kind: "Miner airdrop" | "Treasury burn"
+  targetCalendarMonth: number
   calendarMonth: number
   amount: string
   yesVotes: string
@@ -63,11 +63,13 @@ export async function readDaoProposals(account?: `0x${string}`): Promise<{ epoch
     publicClient.getBlockNumber(),
   ])
   const calendarMonth = Number(calendarMonthRaw)
-  const ids = (await Promise.all(
-    [0, 1].map((kind) => publicClient.readContract({
-      address: DAO_GOVERNANCE_ADDRESS, abi: GOVERNANCE_ABI, functionName: "proposalForMonth", args: [BigInt(calendarMonth), kind],
-    })),
-  )).filter((id) => id !== 0n)
+  const proposalId = await publicClient.readContract({
+    address: DAO_GOVERNANCE_ADDRESS,
+    abi: GOVERNANCE_ABI,
+    functionName: "proposalForMonth",
+    args: [BigInt(calendarMonth)],
+  })
+  const ids = proposalId === 0n ? [] : [proposalId]
 
   const proposals = await Promise.all(ids.map(async (id) => {
     const [rawInfo, rawVotes] = await Promise.all([
@@ -81,8 +83,8 @@ export async function readDaoProposals(account?: `0x${string}`): Promise<{ epoch
       : false
     return {
       id,
-      kind: proposal[0] === 0 ? "Community airdrop" : "Treasury burn",
-      epoch: Number(proposal[1]),
+      kind: proposal[0] === 0 ? "Miner airdrop" : "Treasury burn",
+      targetCalendarMonth: Number(proposal[1]),
       calendarMonth: Number(proposal[2]),
       amount: formatUnits(votes[0], 18),
       yesVotes: formatUnits(votes[1], 18),

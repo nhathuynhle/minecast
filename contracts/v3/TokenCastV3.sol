@@ -18,20 +18,29 @@ contract TokenCastV3 is ERC20, ERC20Burnable, ERC20Permit, ERC20Votes, ERC20Paus
     uint256 public constant ERA_DAYS = 272;
     uint256 public constant MAX_ERA = 32;
     uint256 public constant BASE_DAILY_EMISSION = (uint256(10_500_000_000) * 1e18) / ERA_DAYS;
+    uint256 public constant MAX_EMERGENCY_PAUSE = 72 hours;
 
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
 
     uint64 public immutable launchTime;
     uint256 public cumulativeMinted;
+    uint64 public pauseEndsAt;
+    bool public bootstrapFinalized;
 
     event Issued(address indexed recipient, uint256 amount, uint256 cumulativeMinted);
     event EmergencyPaused(address indexed guardian);
-    event EmergencyUnpaused(address indexed guardian);
+    event EmergencyUnpaused(address indexed caller);
+    event BootstrapFinalized(address indexed dailyDistributor);
 
     error InvalidLaunchTime();
     error MaxSupplyExceeded();
     error EmissionNotUnlocked();
+    error BootstrapNotFinalized();
+    error BootstrapAlreadyFinalized();
+    error InvalidDistributor();
+    error PauseStillActive(uint64 pauseEndsAt);
+    error RolesImmutable();
 
     constructor(address bootstrapAdmin, address guardian, uint64 launchTime_)
         ERC20("TokenCast", "TOKENCAST")
@@ -46,6 +55,7 @@ contract TokenCastV3 is ERC20, ERC20Burnable, ERC20Permit, ERC20Votes, ERC20Paus
     /// @notice Issues only supply made available by the immutable calendar schedule.
     /// @dev No admin mint exists. After launch, only the audited Merkle distributor should hold MINTER_ROLE.
     function issue(address recipient, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused {
+        if (!bootstrapFinalized) revert BootstrapNotFinalized();
         if (cumulativeMinted + amount > MAX_SUPPLY) revert MaxSupplyExceeded();
         if (cumulativeMinted + amount > releasedSupply()) revert EmissionNotUnlocked();
         cumulativeMinted += amount;
@@ -53,14 +63,33 @@ contract TokenCastV3 is ERC20, ERC20Burnable, ERC20Permit, ERC20Votes, ERC20Paus
         emit Issued(recipient, amount, cumulativeMinted);
     }
 
+    /// @notice Gives the emergency guardian a bounded circuit breaker, not an indefinite kill switch.
     function pause() external onlyRole(GUARDIAN_ROLE) {
         _pause();
+        pauseEndsAt = uint64(block.timestamp + MAX_EMERGENCY_PAUSE);
         emit EmergencyPaused(msg.sender);
     }
 
-    function unpause() external onlyRole(GUARDIAN_ROLE) {
+    /// @notice Anyone can resume the token once the fixed emergency window expires.
+    function unpause() external {
+        if (block.timestamp < pauseEndsAt) revert PauseStillActive(pauseEndsAt);
         _unpause();
         emit EmergencyUnpaused(msg.sender);
+    }
+
+    /// @notice Irreversibly assigns the sole mint role to the daily distributor and removes bootstrap administration.
+    function finalizeBootstrap(address dailyDistributor) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (bootstrapFinalized) revert BootstrapAlreadyFinalized();
+        if (dailyDistributor == address(0) || dailyDistributor.code.length == 0) revert InvalidDistributor();
+        bootstrapFinalized = true;
+        _grantRole(MINTER_ROLE, dailyDistributor);
+        _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        emit BootstrapFinalized(dailyDistributor);
+    }
+
+    /// @dev The deployment roles are immutable. The sole MINTER_ROLE is assigned only by `finalizeBootstrap`.
+    function grantRole(bytes32, address) public virtual override {
+        revert RolesImmutable();
     }
 
     function currentEra() public view returns (uint256) {

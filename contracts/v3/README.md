@@ -1,61 +1,70 @@
-# MineCast V3 governance contracts — draft, not deployed
+# MineCast V3 — draft, not deployed
 
-This folder contains the onchain design agreed for mainnet review. It does **not** replace the deployed Base Sepolia V2 contract and must not be deployed without independent tests, an audit, and a community review.
+These contracts describe the **next** mainnet architecture. They do not replace the deployed Base Sepolia V2 token at `0x53b5F89A6f4832A6257f55Bc6EDfFB753caa7779`. Do not deploy them until independent tests, a public review, and an external audit are complete.
 
-## Immutable parameters
+## Fixed rules
 
-| Rule | Value |
+| Rule | Onchain rule |
 | --- | --- |
-| Maximum cumulative issuance | 21,000,000,000 TOKENCAST |
-| Mining schedule | 272-day halving eras |
-| Governance proposal schedule | Airdrop: day 1 UTC; burn: day 15 UTC |
-| Community airdrop vote | At most 10% of that epoch's scheduled emission |
-| Treasury burn vote | At most 5% of that epoch's scheduled emission |
-| Proposal threshold | 0.25% of snapshot supply |
-| Quorum | 5% of snapshot supply |
-| Vote window | about 7 days on Base |
-| Post-vote timelock | 72 hours |
-| Airdrop claim duration | 1–90 days, selected in the proposal |
-| Recipient ceiling | 0.1% of an airdrop round per wallet |
-| Snapshot integrity | immutable 3-of-5 independent signer set |
-| Airdrop policy | immutable `policyHash` chosen at deployment |
+| Max issuance | `21,000,000,000 TOKENCAST`; burns never reopen headroom |
+| Daily mining | one immutable Merkle allocation root per completed day; the root can never exceed that day's immutable release amount |
+| Miner ceiling | one wallet can receive at most 1% of a day's release, even if a publisher is compromised |
+| Unused daily pool | 5% funds the next staking reward epoch; 95% goes to Community Treasury. Already allocated miner claims are excluded; expired daily claims go entirely to Treasury after 7 days |
+| Mining ledger | claimed allocation is recorded as `minedByCalendarMonth[month][wallet]` on Base |
+| Monthly finalization | after the last daily claim window closes, anyone freezes that month's mining totals permanently |
+| Vote power | only stake that completed the 30-day lock and was explicitly activated before the vote snapshot |
+| Monthly schedule | odd UTC months: miner airdrop vote; even UTC months: Treasury burn vote |
+| Vote type | fixed Yes / No, one action per month, no custom proposal fields |
+| Passing rule | `Yes > No`; a tie, no vote, or No majority does nothing — **no quorum** |
+| Miner airdrop | 10% of the finalized prior month's miner total, capped by Treasury balance; claimed direct by the miner's onchain share |
+| Burn | 5% of the finalized prior month's miner total, capped by Treasury balance |
+| Timelock | successful vote waits 72 hours before permissionless execution |
 
-## Contracts
+The vote opens during UTC days 8–21. This deliberate window gives the previous month's last seven-day mining claim window time to close, so the direct airdrop denominator can be frozen without a Merkle list or committee signature.
 
-- `TokenCastV3.sol`: non-upgradeable ERC20Votes token. Its immutable calendar schedule controls every issuance. `cumulativeMinted` never falls when tokens burn, so burning cannot reopen minting capacity.
-- `MineCastAirdropSnapshotAttestor.sol`: validates an EIP-712 signature bundle from at least three of five immutable, independent snapshot wallets. The exact epoch, recipient Merkle root, policy hash, public snapshot hash, amount and claim duration are signed together.
-- `MineCastMonthlyGovernance.sol`: only two Yes/No proposal types each UTC calendar month: a Merkle-root community airdrop created on day 1, and a Treasury burn created on day 15. Airdrop proposals require a valid 3-of-5 snapshot signature bundle and the immutable policy hash. It deliberately has no generic arbitrary-call proposal.
-- `MineCastCommunityTreasury`: can only fund a passed airdrop or burn its own TOKENCAST after bootstrap is permanently locked.
-- `MineCastAirdropDistributor`: holds a passed Merkle round, lets each wallet claim once, and sweeps expiry leftovers back to the Treasury.
-- `MineCastStaking.sol`: a signer-free staking-reward engine. TOKENCAST is locked for 30 days; a permissionless transaction records the stake snapshot in the first day of each 30-day epoch. Rewards are pro-rata from that block snapshot, and expired rewards roll into a later staker epoch rather than to an operator wallet.
+## What is decentralized — and what cannot be
+
+Monthly governance, direct miner airdrop, staker voting power, Treasury spending, caps, burn, claim accounting, and the 21B supply cap are all enforced on Base.
+
+Farcaster casts, follower counts, and bot signals are not readable by an EVM contract. `MineCastDailyMiningDistributor` therefore names one immutable `rootPublisher` that publishes daily eligibility roots. This is an honest and explicit offchain boundary, not a hidden admin mint key:
+
+- it cannot issue above the calendar's daily cap;
+- it cannot allocate over 1% of a daily cap to one wallet;
+- it cannot replace a published root;
+- it cannot change a closed month's mining ledger;
+- it cannot create a monthly airdrop recipient list or choose a monthly airdrop amount.
+
+If the community later wants a different verification method, that needs a new audited distributor version and community migration; these contracts are deliberately non-upgradeable.
+
+## Contract map
+
+- `TokenCastV3.sol` — capped TOKENCAST. During setup, only `finalizeBootstrap(dailyDistributor)` can assign the sole minter. It then removes the only admin permanently. The guardian can pause for at most 72 hours; anyone can unpause after that expiry.
+- `MineCastDailyMiningDistributor.sol` — capped daily roots, direct daily mining claims, monthly mining ledger, unclaimed daily pool to Treasury, and permissionless month finalization.
+- `MineCastStaking.sol` — 30-day locks, explicit governance-power activation checkpoints, and signer-free staker-reward epochs. Epoch finalization is strictly ordered so rollover rewards cannot be redirected into an old epoch.
+- `MineCastMonthlyGovernance.sol` — contains:
+  - `MineCastMonthlyMinerAirdrop`: direct proportional claims from final mining totals; no Merkle root and no signer group;
+  - `MineCastCommunityTreasury`: can only fund a passed direct airdrop or burn itself after bootstrap lock;
+  - `MineCastMonthlyGovernance`: the single deterministic monthly Yes/No vote.
+- `MineCastAirdropSnapshotAttestor.sol` — retained only as an old V3 draft reference. It is **not used** by the current direct-miner-airdrop design.
 
 ## Required deployment order
 
-1. Deploy `TokenCastV3` with a temporary bootstrap admin and a separate emergency guardian.
-2. Deploy `MineCastAirdropDistributor(token, bootstrapAdmin)`.
-3. Deploy `MineCastCommunityTreasury(token, distributor, bootstrapAdmin)`.
-4. Call `distributor.setTreasury(treasury)` once. This permanently removes its bootstrap admin.
-5. Publish the canonical Airdrop Policy V1 and calculate its `keccak256` hash. The document must state eligibility, points formula, Farcaster data source, snapshot cutoff and anti-abuse exclusions.
-6. Deploy `MineCastAirdropSnapshotAttestor` with five independent wallets. These addresses cannot be changed afterward; at least three must sign every airdrop snapshot using `eth_signTypedData_v4`.
-7. Deploy `MineCastMonthlyGovernance(token, treasury, attestor, launchTime, policyHash)`.
-8. Call `treasury.setGovernance(governance)`, then `treasury.lockGovernance()` once. This permanently removes its bootstrap admin.
-9. Deploy and audit the daily Merkle mining distributor, grant it `MINTER_ROLE` on `TokenCastV3`, then have the bootstrap admin renounce `DEFAULT_ADMIN_ROLE`.
-10. Verify every contract source and publish the deployment transaction plan before mainnet.
+1. Choose and publicly announce a future `launchTime`, bootstrap wallet, bounded emergency guardian, and immutable daily root publisher address.
+2. Deploy `TokenCastV3(bootstrapAdmin, guardian, launchTime)`.
+3. Deploy `MineCastStaking(token, launchTime)`.
+4. Deploy `MineCastMonthlyMinerAirdrop(token, bootstrapAdmin)`.
+5. Deploy `MineCastCommunityTreasury(token, minerAirdrop, bootstrapAdmin)`.
+6. Deploy `MineCastDailyMiningDistributor(token, treasury, rootPublisher, staking)`.
+7. Call `minerAirdrop.setMiningDistributor(dailyDistributor)`, then `minerAirdrop.setTreasury(treasury)`. Both methods are one-time and the latter permanently removes its bootstrap wallet.
+8. Deploy `MineCastMonthlyGovernance(token, treasury, dailyDistributor, staking, launchTime)`.
+9. Call `treasury.setGovernance(governance)`, then `treasury.lockGovernance()`.
+10. Call `token.finalizeBootstrap(dailyDistributor)`. This grants the only minter role and permanently removes bootstrap administration.
+11. Verify every contract, publish the root-publisher policy and root data, and only then launch.
 
-## Staker rewards
+## Pre-mainnet checklist
 
-Staker rewards are deliberately separate from Farcaster airdrops. They need no Farcaster snapshot, backend, Merkle root or 3-of-5 signature because stake balances and reward claims are entirely onchain.
-
-1. Anyone stakes TOKENCAST; each deposit extends that wallet's lock to at least 30 days from its newest deposit.
-2. Anyone calls `snapshotEpoch` in the first 24 hours of a 30-day epoch. Deposits after that block are ineligible until a later epoch.
-3. Anyone can donate TOKENCAST to the snapshotted epoch during that epoch. This is the temporary permissionless funding route; a later audited Treasury-governance integration can fund the same function without changing the accounting rules.
-4. After the epoch closes, anyone finalizes it. A wallet claims its exact pro-rata share from the stored stake checkpoint during the following 90 days.
-5. Expired unclaimed rewards can only roll into future staker reward rounds.
-
-## Governance lifecycle
-
-1. On day 1 UTC, independent indexers produce the same public IPFS snapshot and three of five sign its exact policy hash, Merkle root, amount and claim duration. A self-delegated TOKENCAST holder above the threshold submits that airdrop bundle. On day 15 UTC, an eligible holder may submit the burn proposal; it needs no snapshot.
-2. Voting power is read at a future checkpoint block. Token buyers after that checkpoint cannot influence the proposal.
-3. A proposal must meet 5% quorum and have more Yes than No votes.
-4. Anyone queues a passed proposal; this starts the 72-hour timelock.
-5. Anyone executes it after the delay. The Treasury can only burn its own balance or send the exact approved amount into the immutable Merkle distributor flow.
+- Unit, fuzz, and invariant tests for daily cap, per-wallet cap, freeze order, Treasury-only flows, tie/no-vote behavior, and 30-day vote activation.
+- Independent security audit, especially of deployment finalization and root-publisher operations.
+- Public reproducible root builder using the Farcaster/Neynar source and anti-abuse policy.
+- A reproducible deployment script that proves the one-time bootstrap calls were executed in the documented order.
+- Contract source verification and a public governance operations guide.

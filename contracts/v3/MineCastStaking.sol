@@ -34,21 +34,29 @@ contract MineCastStaking is ReentrancyGuard {
     uint64 public immutable launchTime;
     uint256 public totalStaked;
     uint256 public rolloverRewards;
+    /// @dev Prevents rewards swept from a newer epoch being assigned to an arbitrarily old epoch.
+    uint256 public nextEpochToFinalize;
+    mapping(uint256 epoch => uint256) public scheduledRewards;
+    event FutureRewardsFunded(address indexed funder, uint256 indexed epoch, uint256 amount);
 
     mapping(address account => uint256) public stakedBalance;
     mapping(address account => uint64) public lockedUntil;
+    mapping(address account => uint256) public activeVotingBalance;
     mapping(address account => Checkpoints.Trace208) private _stakeCheckpoints;
+    mapping(address account => Checkpoints.Trace208) private _votingPowerCheckpoints;
     Checkpoints.Trace208 private _totalStakeCheckpoints;
     mapping(uint256 epoch => Epoch) public epochs;
     mapping(uint256 epoch => mapping(address account => bool)) public claimed;
 
     event Staked(address indexed account, uint256 amount, uint256 totalStaked, uint64 lockedUntil);
     event Withdrawn(address indexed account, uint256 amount, uint256 totalStaked);
+    event GovernancePowerActivated(address indexed account, uint256 votingPower);
     event EpochSnapshotted(uint256 indexed epoch, uint256 snapshotBlock, uint256 totalStaked);
     event RewardDonated(uint256 indexed epoch, address indexed donor, uint256 amount);
     event EpochFinalized(uint256 indexed epoch, uint256 rewardAmount, uint64 claimEnd);
     event RewardClaimed(uint256 indexed epoch, address indexed account, uint256 amount);
     event UnclaimedRolledOver(uint256 indexed epoch, uint256 amount);
+    event EpochSkipped(uint256 indexed epoch);
 
     error InvalidConfiguration();
     error InvalidAmount();
@@ -63,6 +71,8 @@ contract MineCastStaking is ReentrancyGuard {
     error NothingToClaim();
     error AlreadySwept();
     error ValueTooLarge();
+    error GovernanceLockActive(uint64 unlockTime);
+    error EpochFinalizationOutOfOrder(uint256 expectedEpoch);
 
     constructor(IERC20 token_, uint64 launchTime_) {
         if (address(token_) == address(0) || launchTime_ < block.timestamp) revert InvalidConfiguration();
@@ -73,6 +83,15 @@ contract MineCastStaking is ReentrancyGuard {
     function currentEpoch() public view returns (uint256) {
         if (block.timestamp <= launchTime) return 0;
         return (block.timestamp - launchTime) / EPOCH_LENGTH;
+    }
+
+    /// @notice Funds the next epoch, so deposits cannot target an old or already snapshotted reward pool.
+    function fundFutureRewards(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        uint256 epoch = currentEpoch() + 1;
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        scheduledRewards[epoch] += amount;
+        emit FutureRewardsFunded(msg.sender, epoch, amount);
     }
 
     function epochStart(uint256 epoch) public view returns (uint256) {
@@ -92,7 +111,10 @@ contract MineCastStaking is ReentrancyGuard {
         totalStaked = newTotal;
         uint64 newLock = uint64(block.timestamp + MINIMUM_LOCK);
         if (newLock > lockedUntil[msg.sender]) lockedUntil[msg.sender] = newLock;
+        // Any top-up starts a fresh 30-day governance maturation period for this account.
+        activeVotingBalance[msg.sender] = 0;
         _stakeCheckpoints[msg.sender].push(uint48(block.number), uint208(newBalance));
+        _votingPowerCheckpoints[msg.sender].push(uint48(block.number), 0);
         _totalStakeCheckpoints.push(uint48(block.number), uint208(newTotal));
         emit Staked(msg.sender, amount, newTotal, lockedUntil[msg.sender]);
     }
@@ -108,9 +130,26 @@ contract MineCastStaking is ReentrancyGuard {
         stakedBalance[msg.sender] = newBalance;
         totalStaked = newTotal;
         _stakeCheckpoints[msg.sender].push(uint48(block.number), uint208(newBalance));
+        // A withdrawal can occur only after the 30-day lock, so the remaining mature stake keeps its power.
+        if (activeVotingBalance[msg.sender] != 0) {
+            activeVotingBalance[msg.sender] = newBalance;
+            _votingPowerCheckpoints[msg.sender].push(uint48(block.number), uint208(newBalance));
+        }
         _totalStakeCheckpoints.push(uint48(block.number), uint208(newTotal));
         token.safeTransfer(msg.sender, amount);
         emit Withdrawn(msg.sender, amount, newTotal);
+    }
+
+    /// @notice Activates vote power only after this account's full 30-day staking lock has matured.
+    /// @dev This explicit checkpoint is intentional: governance can prove historical eligibility without a backend.
+    function activateGovernancePower() external {
+        if (stakedBalance[msg.sender] == 0) revert InvalidAmount();
+        if (block.timestamp < lockedUntil[msg.sender]) revert GovernanceLockActive(lockedUntil[msg.sender]);
+        if (block.number > type(uint48).max || stakedBalance[msg.sender] > type(uint208).max) revert ValueTooLarge();
+
+        activeVotingBalance[msg.sender] = stakedBalance[msg.sender];
+        _votingPowerCheckpoints[msg.sender].push(uint48(block.number), uint208(stakedBalance[msg.sender]));
+        emit GovernancePowerActivated(msg.sender, stakedBalance[msg.sender]);
     }
 
     /// @notice Permissionlessly records the stake snapshot during the first day of each epoch.
@@ -146,14 +185,28 @@ contract MineCastStaking is ReentrancyGuard {
     /// @notice Locks a completed epoch's pool. Claims then use only its immutable block snapshot.
     function finalizeEpoch(uint256 epoch) external {
         Epoch storage rewardEpoch = epochs[epoch];
+        if (epoch != nextEpochToFinalize) revert EpochFinalizationOutOfOrder(nextEpochToFinalize);
         if (!rewardEpoch.snapshotTaken || rewardEpoch.finalized) revert EpochFinalizedAlready();
         if (block.timestamp <= epochStart(epoch) + EPOCH_LENGTH) revert EpochNotClosed();
 
         rewardEpoch.finalized = true;
-        rewardEpoch.rewardAmount = rewardEpoch.donatedRewards + rolloverRewards;
+        rewardEpoch.rewardAmount = rewardEpoch.donatedRewards + rolloverRewards + scheduledRewards[epoch];
+        delete scheduledRewards[epoch];
         rewardEpoch.claimEnd = uint64(block.timestamp + CLAIM_WINDOW);
         rolloverRewards = 0;
+        nextEpochToFinalize = epoch + 1;
         emit EpochFinalized(epoch, rewardEpoch.rewardAmount, rewardEpoch.claimEnd);
+    }
+
+    /// @notice Advances a missed reward epoch after it closes, so a missed permissionless snapshot cannot freeze rewards forever.
+    function skipEpoch(uint256 epoch) external {
+        if (epoch != nextEpochToFinalize) revert EpochFinalizationOutOfOrder(nextEpochToFinalize);
+        Epoch storage rewardEpoch = epochs[epoch];
+        if (rewardEpoch.snapshotTaken || block.timestamp <= epochStart(epoch) + EPOCH_LENGTH) revert EpochNotClosed();
+        scheduledRewards[epoch + 1] += scheduledRewards[epoch];
+        delete scheduledRewards[epoch];
+        nextEpochToFinalize = epoch + 1;
+        emit EpochSkipped(epoch);
     }
 
     function claim(uint256 epoch) external nonReentrant returns (uint256 amount) {
@@ -192,5 +245,11 @@ contract MineCastStaking is ReentrancyGuard {
     function totalStakeAt(uint256 blockNumber) external view returns (uint256) {
         if (blockNumber >= block.number || blockNumber > type(uint48).max) revert SnapshotUnavailable();
         return _totalStakeCheckpoints.upperLookup(uint48(blockNumber));
+    }
+
+    /// @notice Historical stake that had completed the 30-day governance activation period at `blockNumber`.
+    function votingPowerAt(address account, uint256 blockNumber) external view returns (uint256) {
+        if (blockNumber >= block.number || blockNumber > type(uint48).max) revert SnapshotUnavailable();
+        return _votingPowerCheckpoints[account].upperLookup(uint48(blockNumber));
     }
 }
