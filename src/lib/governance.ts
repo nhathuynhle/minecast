@@ -12,9 +12,18 @@ export const DAO_GOVERNANCE_ADDRESS = (
 const configuredChainId = Number(import.meta.env.VITE_DAO_CHAIN_ID ?? TOKENCAST_CHAIN_ID)
 export const DAO_CHAIN_ID = configuredChainId === baseSepolia.id ? baseSepolia.id : base.id
 export const DAO_IS_DEPLOYED = DAO_GOVERNANCE_ADDRESS !== zeroAddress
+const stakingAddress = import.meta.env.VITE_DAO_STAKING_ADDRESS
+export const DAO_STAKING_ADDRESS = (stakingAddress && isAddress(stakingAddress) ? stakingAddress : zeroAddress) as `0x${string}`
+export const STAKING_IS_CONFIGURED = DAO_STAKING_ADDRESS !== zeroAddress
 
 const chain = DAO_CHAIN_ID === baseSepolia.id ? baseSepolia : base
 const publicClient = createPublicClient({ chain, transport: baseRpcTransport(chain.id) })
+
+export async function readTotalStaked(): Promise<string> {
+  if (!STAKING_IS_CONFIGURED) throw new Error("Staking is not configured.")
+  const total = await publicClient.readContract({ address: DAO_STAKING_ADDRESS, abi: [{ type: "function", name: "totalStaked", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] }] as const, functionName: "totalStaked" })
+  return formatUnits(total, 18)
+}
 
 const GOVERNANCE_ABI = [
   { type: "function", name: "currentCalendarMonth", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },

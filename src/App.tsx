@@ -48,7 +48,7 @@ import {
 import { executeClaimOnBase, type ClaimStatus } from "@/lib/web3-claim"
 import { TOKENCAST_CHAIN_ID, TOKENCAST_CONTRACT_ADDRESS, TOKENCAST_IS_DEPLOYED } from "@/lib/contract"
 import { basescanUrl, readOnchainSnapshot, type OnchainSnapshot } from "@/lib/onchain"
-import { DAO_IS_DEPLOYED, castDaoVote, readDaoProposals, type DaoProposal } from "@/lib/governance"
+import { DAO_IS_DEPLOYED, STAKING_IS_CONFIGURED, castDaoVote, readDaoProposals, readTotalStaked, type DaoProposal } from "@/lib/governance"
 
 type Tab = "mine" | "invite" | "network" | "token" | "dao" | "admin"
 
@@ -1068,6 +1068,7 @@ function TokenPanel({
 }
 
 function DaoPanel() {
+  const [totalStaked, setTotalStaked] = useState<string | null>(null)
   const [epoch, setEpoch] = useState<number | null>(null)
   const [proposals, setProposals] = useState<DaoProposal[]>([])
   const [loading, setLoading] = useState(false)
@@ -1089,7 +1090,7 @@ function DaoPanel() {
     }
   }
 
-  useEffect(() => { void refresh() }, [])
+  useEffect(() => { void refresh(); if (STAKING_IS_CONFIGURED) void readTotalStaked().then(setTotalStaked).catch(() => setTotalStaked(null)) }, [])
 
   async function vote(proposal: DaoProposal, support: boolean) {
     setVotingId(proposal.id)
@@ -1113,30 +1114,36 @@ function DaoPanel() {
         <div>
           <p className="flex items-center gap-2 text-sm font-semibold text-[#c4b5fd]"><Vote className="size-4" /> Community governance</p>
           <h2 className="mt-1 text-xl font-bold text-white">MineCast DAO</h2>
-          <p className="mt-1 text-sm text-gray-400">Only TOKENCAST staked and activated for 30+ days votes Yes or No at the onchain snapshot.</p>
+          <p className="mt-1 text-sm text-gray-400">Stake for 30 days, then activate voting power.</p>
         </div>
         <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${DAO_IS_DEPLOYED ? "bg-green-500/15 text-green-300" : "bg-amber-500/15 text-amber-200"}`}>
           {DAO_IS_DEPLOYED ? "V3 live" : "V3 pending"}
         </span>
       </div>
 
+      <div className="mt-4 rounded-xl border border-[#8a63d2]/30 bg-[#0b0f17] p-4">
+        <div className="flex items-center justify-between gap-3"><p className="font-semibold text-white">Stake</p><span className="text-xs text-gray-400">{STAKING_IS_CONFIGURED ? "Onchain" : "Coming soon"}</span></div>
+        <p className="mt-3 text-sm text-gray-400">Total staked</p>
+        <p className="mt-1 text-xl font-bold text-white">{totalStaked === null ? "—" : formatTokens(Number(totalStaked))} <span className="text-sm font-normal text-gray-400">{TOKEN_SYMBOL}</span></p>
+        <button type="button" disabled className="mt-3 h-11 w-full rounded-xl bg-[#8a63d2] font-semibold text-white opacity-50">Stake · Coming soon</button>
+        <p className="mt-2 text-xs text-gray-400">Staking transactions will be available after V3 integration.</p>
+      </div>
+
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
           <p className="text-sm text-gray-400">Community airdrop</p>
             <p className="mt-1 font-semibold text-white">Odd months · 10% of prior miners’ total</p>
-            <p className="mt-1 text-xs text-gray-500">Every miner claims directly on Base by their finalized share of the previous month’s mining. No Merkle list or signer committee.</p>
         </div>
         <div className="rounded-xl border border-gray-800 bg-[#0b0f17] p-4">
           <p className="text-sm text-gray-400">Treasury burn</p>
             <p className="mt-1 font-semibold text-white">Even months · 5% of prior miners’ total</p>
-            <p className="mt-1 text-xs text-gray-500">A passed vote can only burn TOKENCAST already held by the Community Treasury.</p>
         </div>
       </div>
 
       {!DAO_IS_DEPLOYED ? (
         <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
           <p className="font-semibold text-amber-100">Voting opens after V3 deployment</p>
-          <p className="mt-1 text-sm text-amber-100/80">This is intentionally not a fake vote button. After V3 is deployed, this tab reads the single fixed monthly proposal and submits your Base vote through your Farcaster wallet.</p>
+          <p className="mt-1 text-sm text-amber-100/80">Stake and vote will open after V3 deployment.</p>
         </div>
       ) : (
         <>
@@ -1170,7 +1177,7 @@ function DaoPanel() {
       )}
 
       {message ? <p role="alert" className="mt-4 rounded-xl bg-[#8a63d2]/15 px-3 py-2 text-sm text-[#ddd6fe]">{message}</p> : null}
-      <p className="mt-4 text-xs text-gray-500">Schedule: airdrop proposal on day 1 UTC, burn proposal on day 15 UTC. Delegation is required; votes run 7 days, with 5% quorum and a 72-hour execution delay.</p>
+      <p className="mt-4 text-xs text-gray-500">One Yes/No vote per month · ties result in no action.</p>
     </section>
   )
 }
