@@ -99,6 +99,7 @@ export default function App() {
   const [claimEndsAt, setClaimEndsAt] = useState<string | null>(null)
   const [gateBusy, setGateBusy] = useState(false)
   const [claimSucceeded, setClaimSucceeded] = useState(false)
+  const [claimStatus, setClaimStatus] = useState<ClaimStatus>("idle")
   const [farcasterIdentity, setFarcasterIdentity] = useState<FarcasterIdentity | null>(null)
   const minerRef = useRef(miner)
   minerRef.current = miner
@@ -221,6 +222,7 @@ export default function App() {
               onCast={() => {
                 setNotice("")
                 setClaimSucceeded(false)
+                setClaimStatus("idle")
                 void refreshClaimGate()
                 setComposer(true)
               }}
@@ -299,16 +301,19 @@ export default function App() {
           claimEndsAt={claimEndsAt}
           gateBusy={gateBusy}
           claimSucceeded={claimSucceeded}
+          claimStatus={claimStatus}
           onRetry={() => void refreshClaimGate()}
           onClaim={async () => {
             setGateBusy(true)
             setNotice("")
             setClaimSucceeded(false)
+            setClaimStatus("idle")
             setClaimGate("checking")
             try {
               const wallet = await connectFarcasterWallet(TOKENCAST_CHAIN_ID)
               setPayout(wallet)
               await executeClaimOnBase({ userAddress: wallet as `0x${string}`, onStatusChange: (status, message) => {
+                setClaimStatus(status)
                 if (status === "success") {
                   setClaimSucceeded(true)
                   setNotice("")
@@ -323,8 +328,12 @@ export default function App() {
               if (/No settled mining reward|Claim nonce is stale/i.test(message)) {
                 await refreshClaimGate()
                 setClaimSucceeded(true)
+                setClaimStatus("success")
                 setNotice("")
-              } else setNotice(message)
+              } else {
+                setClaimStatus("error")
+                setNotice(message)
+              }
             } finally { setGateBusy(false) }
           }}
           onNotice={setNotice}
@@ -1292,7 +1301,7 @@ function Composer({
   onNotice,
   onClose,
   onPublish,
-  claimGate, claimAmount, claimEndsAt, gateBusy, claimSucceeded, onClaim, onRetry,
+  claimGate, claimAmount, claimEndsAt, gateBusy, claimSucceeded, claimStatus, onClaim, onRetry,
 }: {
   era: number
   reward: number
@@ -1305,6 +1314,7 @@ function Composer({
   claimEndsAt: string | null
   gateBusy: boolean
   claimSucceeded: boolean
+  claimStatus: ClaimStatus
   onClaim: () => Promise<void>
   onRetry: () => void
 }) {
@@ -1337,7 +1347,8 @@ function Composer({
     return () => window.clearInterval(interval)
   }, [claimGate, claimEndsAt])
 
-  const error = localError || notice
+  const error = localError || (claimStatus === "error" || claimGate === "error" ? notice : "")
+  const claimInProgress = gateBusy && claimStatus !== "error"
   const tooLong = text.trim().length > 1024
   const activeEndsAt = claimEndsAt ? Date.parse(claimEndsAt) : Number.NaN
   const activeRemaining = Number.isFinite(activeEndsAt) ? Math.max(0, activeEndsAt - activeClock) : 0
@@ -1379,8 +1390,9 @@ function Composer({
             <p className="mt-1 text-3xl font-bold tabular-nums text-[#c4b5fd]">{formatClock(activeRemaining)}</p>
             <p className="mt-1 text-sm text-gray-400">remaining until your reward can be claimed</p>
           </div> : <p className="text-sm text-gray-300">{claimGate === "checking" ? "Checking your mining reward…" : claimGate === "claim" ? `Claim your verified reward before your next cast: ${formatTokens(Number(BigInt(claimAmount)) / 1e18)} ${TOKEN_SYMBOL}` : "Could not check your reward."}</p>}
-          {notice ? <p className="text-sm text-red-400">{notice}</p> : null}
-          {claimGate === "claim" ? <button type="button" disabled={gateBusy} onClick={() => void onClaim()} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold disabled:opacity-50">{gateBusy ? "Confirm in wallet…" : "Claim reward"}</button> : null}
+          {notice && !error ? <p className={`rounded-xl px-3 py-2 text-sm ${claimStatus === "success" ? "bg-green-500/15 text-green-300" : "bg-[#8a63d2]/15 text-[#ddd6fe]"}`}>{notice}</p> : null}
+          {error ? <p className="rounded-xl bg-red-500/20 px-3 py-2 text-sm text-red-300">{error}</p> : null}
+          {claimGate === "claim" ? <button type="button" disabled={gateBusy} onClick={() => void onClaim()} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold disabled:opacity-50">{claimInProgress ? claimStatus === "signing_wallet_login" ? "Sign in wallet…" : claimStatus === "sending_tx" ? "Confirming on Base…" : "Preparing secure claim…" : "Claim reward"}</button> : null}
           {claimGate === "active" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl border border-[#8a63d2]/60 font-semibold text-[#c4b5fd]">Refresh reward status</button> : null}
           {claimGate === "error" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold">Retry</button> : null}
         </div> : <form

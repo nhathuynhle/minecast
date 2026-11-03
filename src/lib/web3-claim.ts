@@ -90,25 +90,16 @@ export async function executeClaimOnBase({
     onStatusChange("sending_tx", "Transaction sent. Waiting for Base confirmation...");
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") throw new Error("Claim transaction reverted on Base.");
-    // Base is the source of truth. A temporary ledger callback failure must
-    // never make a mined, successful wallet transaction look like a failed
-    // claim. The next eligibility refresh reconciles it through userNonces.
-    let ledgerSynced = false;
-    try {
-      const confirmation = await farcasterFetch("/api/claim/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userAddress: account, nonce: nonce.toString(), transactionHash: hash }),
-      });
-      const confirmationData = await confirmation.json();
-      ledgerSynced = Boolean(confirmation.ok && confirmationData.confirmed);
-    } catch {
-      // Reconciliation runs automatically during the next eligibility check.
-    }
-
-    onStatusChange("success", ledgerSynced
-      ? `Claim confirmed on Base! Tx: ${hash}`
-      : `Claim confirmed on Base. Syncing your mining ledger… Tx: ${hash}`);
+    // The Base receipt is final. Tell the user immediately, then let the
+    // non-critical analytics callback run in the background. If a mobile app
+    // closes before it finishes, the next eligibility request reconciles via
+    // TokenCast.userNonces.
+    onStatusChange("success", "Claim confirmed on Base. Your balance is updating…");
+    void farcasterFetch("/api/claim/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userAddress: account, nonce: nonce.toString(), transactionHash: hash }),
+    }).catch(() => undefined);
     return hash;
   } catch (error: any) {
     onStatusChange("error", error.message || "Giao dịch thất bại.");
