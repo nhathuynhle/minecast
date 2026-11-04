@@ -225,7 +225,7 @@ export default function App() {
               <Vote className="size-4" /> DAO
             </button>
             <div aria-label="Base network" className="flex items-center gap-2 rounded-xl bg-[#0052ff]/15 px-3 py-2 text-sm font-semibold text-white">
-              <svg aria-hidden="true" viewBox="0 0 32 32" className="size-5" fill="none"><circle cx="16" cy="16" r="16" fill="#0052FF"/><path d="M16 26a10 10 0 1 0-9.95-11h13.1v2H6.05A10 10 0 0 0 16 26Z" fill="white"/></svg>
+              <span aria-hidden="true" className="size-4 shrink-0 bg-[#0000ff]" />
               Base
             </div>
           </div>
