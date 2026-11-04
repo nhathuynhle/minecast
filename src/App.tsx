@@ -221,10 +221,13 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setTab("dao")} className="flex h-10 items-center gap-2 rounded-xl border border-[#8a63d2]/40 px-3 text-sm font-semibold text-[#c4b5fd] hover:bg-[#8a63d2]/10">
+            <button type="button" onClick={() => setTab("dao")} className="hidden h-10 items-center gap-2 rounded-xl border border-[#8a63d2]/40 px-3 text-sm font-semibold text-[#c4b5fd] hover:bg-[#8a63d2]/10 lg:flex">
               <Vote className="size-4" /> DAO
             </button>
-            <p className="rounded-xl bg-[#8a63d2]/20 px-3 py-2 text-sm font-semibold text-[#a78bfa]">Base</p>
+            <div aria-label="Base network" className="flex items-center gap-2 rounded-xl bg-[#0052ff]/15 px-3 py-2 text-sm font-semibold text-white">
+              <svg aria-hidden="true" viewBox="0 0 32 32" className="size-5" fill="none"><circle cx="16" cy="16" r="16" fill="#0052FF"/><path d="M16 26a10 10 0 1 0-9.95-11h13.1v2H6.05A10 10 0 0 0 16 26Z" fill="white"/></svg>
+              Base
+            </div>
           </div>
         </header>
 
