@@ -104,6 +104,26 @@ export default function App() {
   const minerRef = useRef(miner)
   minerRef.current = miner
 
+  async function syncServerSession() {
+    try {
+      const response = await farcasterFetch("/api/mine/session")
+      if (!response.ok) return
+      const data = await response.json()
+      const row = data.session
+      if (!row) {
+        setMiner((current) => ({ ...current, session: null }))
+        return
+      }
+      const startedAt = Date.parse(row.started_at)
+      const endsAt = Date.parse(row.ends_at)
+      const reward = Number(formatUnits(BigInt(row.reward_wei), 18))
+      if (!Number.isFinite(startedAt) || !Number.isFinite(endsAt) || !Number.isFinite(reward)) return
+      setMiner((current) => ({ ...current, session: { startedAt, endsAt, reward, era: current.session?.era ?? 0, text: current.session?.startedAt === startedAt ? current.session.text : "" } }))
+    } catch {
+      // Keep the existing display when the server or connection is unavailable.
+    }
+  }
+
   useEffect(() => {
     if (typeof window === "undefined") return
     const params = new URLSearchParams(window.location.search)
@@ -145,10 +165,13 @@ export default function App() {
       // Never preserve a browser-entered or cached identity. The SDK context is
       // the only source of truth for the signed-in miner shown in the UI.
       setMiner((current) => ({ ...current, handle: username }))
+      void syncServerSession()
       void farcasterFetch("/api/mine/settle", { method: "POST" })
         .catch(() => undefined)
     })
-    return () => window.clearInterval(id)
+    const onVisible = () => { if (document.visibilityState === "visible") void syncServerSession() }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVisible) }
   }, [])
 
   useEffect(() => {
