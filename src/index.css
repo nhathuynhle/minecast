@@ -24,3 +24,78 @@
 .live-dot {
   animation: pulse-dot 1.8s ease-in-out infinite;
 }
+
+.minecast-app {
+  color-scheme: dark;
+  background: radial-gradient(ellipse at 50% 0%, #201a31 0, transparent 34rem), #0b0f17;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.mc-shell {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: max(1rem, env(safe-area-inset-top)) clamp(.875rem, 3vw, 2rem) calc(6.5rem + env(safe-area-inset-bottom));
+}
+.mc-header { padding-bottom: 1rem; border-bottom: 1px solid #302d3e; }
+.mc-header img { width: 2.3rem; height: 2.3rem; border-radius: .75rem; }
+.mc-header h1 { font-size: 1.32rem; letter-spacing: -.055em; }
+.mc-network, .mc-era, .mc-status {
+  display: inline-flex; align-items: center; gap: .45rem; white-space: nowrap;
+  font-size: .75rem; font-weight: 600; padding: .36rem .7rem; border-radius: 999px;
+}
+.mc-network { border: 1px solid #383443; background: #191923; }
+.mc-main { margin-top: clamp(1rem, 3vw, 2rem); }
+.mc-mine-layout, .mc-side { display: grid; gap: 1rem; align-items: start; }
+.mc-side > section { margin-top: 0; }
+.mc-tab-panel { max-width: 45rem; margin-inline: auto; }
+.mc-session, .mc-tab-panel section, .mc-side > section, .mc-guide {
+  min-width: 0; border: 1px solid #353044; border-radius: 1.35rem;
+  background: linear-gradient(145deg, #1c1b29, #141923 78%);
+  box-shadow: 0 8px 28px #06081033;
+}
+.mc-session, .mc-tab-panel section { padding: clamp(1rem, 3vw, 1.6rem); }
+.mc-era { color: #d3bdf8; background: #30263f; border: 1px solid #49375d; }
+.mc-title, .mc-tab-panel h2 { font-size: 1.42rem; font-weight: 680; letter-spacing: -.04em; }
+.mc-instrument {
+  display: grid; place-items: center; margin: 1rem 0; padding: .5rem;
+  border-block: 1px solid #363042;
+  background-image: radial-gradient(ellipse at center, #53407155, transparent 67%), radial-gradient(#9e84be38 .8px, transparent 1px);
+  background-size: auto, 10px 10px;
+}
+.mc-dial { position: relative; display: grid; place-items: center; width: clamp(10rem, 46vw, 13rem); }
+.mc-dial > svg { width: 100%; }
+.mc-time { font: 600 clamp(1.4rem, 6vw, 1.85rem)/1 ui-monospace, Consolas, monospace; letter-spacing: -.06em; }
+.mc-balance { display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+.mc-amount { font-size: clamp(1.6rem, 6vw, 2rem); line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.05em; }
+.mc-amount span { font-size: .7rem; letter-spacing: .035em; color: #c3a6f1; }
+.mc-status { color: #d4c4eb; background: #302938; }
+.mc-session dl { border-top: 1px solid #353044; padding-top: .85rem; }
+.mc-session dl > div { background: transparent; padding: .25rem; }
+.mc-session dl > div + div { border-left: 1px solid #353044; border-radius: 0; }
+.mc-session dl dt, .mc-session dl dd:last-child { font-size: .75rem; }
+.mc-side > section, .mc-guide { padding: 1rem 1.2rem; }
+.minecast-app summary { cursor: pointer; color: #e3daee; font-weight: 600; }
+.minecast-app input { min-width: 0; }
+.minecast-app :is(button, a, input, textarea, summary):focus-visible { outline: 2px solid #c4a7ff; outline-offset: 3px; }
+.minecast-app button:not(:disabled) { cursor: pointer; }
+.minecast-app button.bg-\[\#8a63d2\] { background: linear-gradient(110deg, #8051cb, #764dbb); }
+.minecast-app button.bg-\[\#8a63d2\]:hover:not(:disabled) { filter: brightness(1.12); }
+.mc-nav {
+  position: fixed; z-index: 30; bottom: max(.45rem, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+  width: min(29rem, calc(100% - 1.25rem)); border: 1px solid #494053; border-radius: 1.25rem;
+  padding: .25rem; background: #15151feb; backdrop-filter: blur(16px); box-shadow: 0 7px 24px #0007;
+}
+.mc-nav button { height: 3.15rem; gap: .1rem; font-size: .7rem; border-radius: .95rem; }
+.mc-nav button[aria-current] { background: #33263f; color: #d9baff; }
+.mc-nav-icon { display: grid; place-items: center; height: 1.45rem; }
+.mc-nav-icon svg { width: 1.1rem; }
+.mc-sheet { max-height: calc(100dvh - 2rem); overflow-y: auto; overscroll-behavior: contain; }
+.mc-dialog[open] { position: fixed; inset: 0; margin: auto auto max(.65rem, env(safe-area-inset-bottom)); width: min(28rem, calc(100% - 1.25rem)); max-width: none; border-radius: 1.35rem; color: inherit; background: #171923; }
+.mc-dialog::backdrop { background: #060811bc; backdrop-filter: blur(5px); }
+@media (min-width: 40rem) { .mc-dialog[open] { margin: auto; } }
+@media (min-width: 54rem) {
+  .mc-mine-layout { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 1.3rem; }
+  .mc-header { padding-block: .7rem 1.2rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .minecast-app *, .minecast-app *::before { transition-duration: 0s; animation-duration: 0s; animation-iteration-count: 1; }
+}

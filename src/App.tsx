@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
-import { Gem, Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck, Vote } from "lucide-react"
+import { Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck, Vote } from "lucide-react"
 import { formatUnits } from "viem"
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch, type FarcasterIdentity } from "@/lib/farcaster"
 import {
@@ -89,6 +89,7 @@ const STEPS = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("mine")
+  useEffect(() => { window.scrollTo(0, 0) }, [tab])
   const [now, setNow] = useState<number | null>(null)
   const [miner, setMiner] = useState<MinerState>(EMPTY_MINER)
   const [ready, setReady] = useState(false)
@@ -209,36 +210,32 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-dvh bg-[#0b0f17] text-[#f3f4f6]">
-      <div className="h-1 bg-[#8a63d2]" />
-      <div className="mx-auto max-w-6xl px-4 pt-5 pb-28 lg:pt-8 lg:pb-12">
-        <header className="flex items-center justify-between gap-3">
+    <div className="minecast-app min-h-dvh text-[#f3f4f6]">
+      <div className="mc-shell">
+        <header className="mc-header flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Mark />
             <div>
               <h1 className="text-lg font-bold tracking-tight text-white">{APP_NAME}</h1>
-              <p className="text-sm text-gray-400">Cast once. Mine for 24 hours.</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setTab("dao")} className="hidden h-10 items-center gap-2 rounded-xl border border-[#8a63d2]/40 px-3 text-sm font-semibold text-[#c4b5fd] hover:bg-[#8a63d2]/10 lg:flex">
-              <Vote className="size-4" /> DAO
-            </button>
-            <div aria-label="Base network" className="flex items-center gap-2 rounded-xl bg-[#0052ff]/15 px-3 py-2 text-sm font-semibold text-white">
-              <span aria-hidden="true" className="size-4 shrink-0 bg-[#0000ff]" />
-              Base
+            <div className="mc-network">
+              <span aria-hidden="true" className="size-3 shrink-0 bg-[#0000ff]" />
+              {TOKENCAST_CHAIN_ID === 84532 ? "Base Sepolia" : "Base"}
             </div>
           </div>
         </header>
 
-        <div className="mt-5 grid items-start gap-4 lg:grid-cols-5">
-          <div className={`${tab === "mine" ? "" : "hidden lg:block"} lg:col-span-2`}>
+        <main className="mc-main">
+          <div className={tab === "mine" ? "mc-mine-layout" : "hidden"}>
             <MineCard
               handle={miner.handle}
               identityVerified={Boolean(farcasterIdentity)}
               era={now ? quote.era : 0}
               balance={shownBalance}
               live={mining}
+              claimReady={claimGate === "claim" && !claimSucceeded}
               remain={remain}
               mining={mining}
               reward={mining && session ? session.reward : quote.reward}
@@ -253,7 +250,11 @@ export default function App() {
                 setComposer(true)
               }}
             />
-            <ol className="mt-4 grid gap-2">
+            <div className="mc-side">
+            <YourCasts casts={miner.casts} now={now} />
+            <details className="mc-guide">
+              <summary>How mining works</summary>
+            <ol className="mt-2 grid gap-2">
               {STEPS.map((step, index) => (
                 <li key={step.title} className="flex gap-3 rounded-2xl border border-gray-800 bg-[#141b26] px-3 py-3">
                   <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#8a63d2]/20 text-sm font-semibold text-[#a78bfa]">
@@ -266,12 +267,13 @@ export default function App() {
                 </li>
               ))}
             </ol>
-            <YourCasts casts={miner.casts} now={now} />
+            </details>
+            </div>
           </div>
 
-          <div className={`${tab === "mine" ? "hidden lg:grid" : "grid"} gap-4 lg:col-span-3`}>
+          <div className={tab === "mine" ? "hidden" : "mc-tab-panel"}>
             {tab === "invite" || tab === "mine" ? (
-              <div className={tab === "mine" ? "hidden lg:block" : ""}>
+              <div className={tab === "invite" ? "" : "hidden"}>
                 <InvitePanel
                   handle={miner.handle}
                   invitedBy={miner.invitedBy}
@@ -282,7 +284,7 @@ export default function App() {
                 />
               </div>
             ) : null}
-            <div className={tab === "token" || tab === "invite" || tab === "dao" ? "hidden lg:block" : ""}>
+            <div className={tab === "network" ? "" : "hidden"}>
               <NetworkPanel
                 now={now}
                 mined={networkMined}
@@ -292,7 +294,7 @@ export default function App() {
                 castAt={session?.startedAt ?? null}
               />
             </div>
-            <div className={tab === "network" || tab === "invite" || tab === "dao" ? "hidden lg:block" : ""}>
+            <div className={tab === "token" ? "" : "hidden"}>
               <TokenPanel
                 balance={shownBalance}
                 payout={miner.payout}
@@ -303,12 +305,12 @@ export default function App() {
             </div>
             {tab === "dao" ? <DaoPanel /> : null}
           </div>
-        </div>
+        </main>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-800 bg-[#0b0f17]/95 backdrop-blur lg:hidden">
-        <div className="mx-auto grid max-w-lg grid-cols-5">
-          <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<Gem className="size-5" />} />
+      <nav className="mc-nav" aria-label="Main navigation">
+        <div className="grid grid-cols-5">
+          <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<FarcasterMark className="size-5" />} />
           <NavButton active={tab === "invite"} onClick={() => setTab("invite")} label="Squad" icon={<Users className="size-5" />} />
           <NavButton active={tab === "network"} onClick={() => setTab("network")} label="Network" icon={<Radio className="size-5" />} />
           <NavButton active={tab === "token"} onClick={() => setTab("token")} label="Token" icon={<Layers className="size-5" />} />
@@ -432,6 +434,10 @@ function halvingRatio(mined: number): number {
   return Math.min(1, Math.max(0, (mined - start) / span))
 }
 
+function FarcasterMark({ className }: { className: string }) {
+  return <img src="/farcaster-mark.png" alt="" width={20} height={20} className={className} />
+}
+
 function Mark() {
   return (
     <img src="/tokencast-logo.png" alt="MineCast" width={44} height={44} className="size-11 shrink-0 rounded-lg object-cover" />
@@ -444,6 +450,7 @@ function MineCard({
   era,
   balance,
   live,
+  claimReady,
   remain,
   mining,
   reward,
@@ -457,6 +464,7 @@ function MineCard({
   era: number
   balance: number
   live: boolean
+  claimReady: boolean
   remain: number
   mining: boolean
   reward: number
@@ -467,40 +475,35 @@ function MineCard({
 }) {
   const ring = mining ? remain / SESSION_MS : 1
   return (
-    <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
-      <div className="flex items-end justify-between gap-3">
+    <section className="mc-session">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <span className="text-sm text-gray-400">Verified Miner</span>
-          <span className="mt-1 flex h-12 items-center gap-1 rounded-xl border border-gray-700 bg-[#0b0f17] px-3">
-            <span className="text-gray-400" aria-hidden>@</span>
-            <span aria-label="Verified Farcaster Handle" className="min-w-0 flex-1 truncate text-base text-white">
-              {handle || "connect-in-farcaster"}
+          <h2 className="mc-title">Mining session</h2>
+          <span className="mt-1 flex items-center gap-1.5 text-sm text-gray-400">
+            <span className="min-w-0 truncate">
+              {handle ? `@${handle}` : "Open in Farcaster to connect"}
             </span>
-            <ShieldCheck className={`size-4 shrink-0 ${identityVerified ? "text-green-400" : "text-gray-600"}`} aria-label={identityVerified ? "Farcaster identity verified" : "Farcaster identity unavailable"} />
+            {identityVerified && <ShieldCheck className="size-4 shrink-0 text-[#b69af4]" aria-label="Verified Farcaster miner" />}
           </span>
         </div>
-        <div className="pb-1 text-right">
-          <p className="text-sm text-gray-400">Era</p>
-          <p className="text-2xl font-semibold tabular-nums text-white">{era}</p>
-        </div>
+        <span className="mc-era">Era {era}</span>
       </div>
 
-      <div className="mt-6 flex flex-col items-center">
-        <SessionRing progress={ring} label={formatClock(remain)} caption={mining ? "remaining" : "per session"} />
-        <p className="mt-4 flex items-center gap-2 text-sm text-gray-400">
-          {mining ? <span className="live-dot size-2 rounded-full bg-[#8a63d2]" aria-hidden /> : null}
-          {mining ? "Mining Active" : "No Active Session"}
-        </p>
-        <p className="mt-1 text-4xl font-semibold tabular-nums tracking-tight text-[#a78bfa]">
-          {formatBalance(balance, live)}
-        </p>
-        <p className="text-sm font-medium text-gray-400">{TOKEN_SYMBOL}</p>
-        {castText ? <p className="mt-3 line-clamp-2 text-center text-sm text-gray-400">"{castText}"</p> : null}
+      <div className="mc-instrument">
+        <SessionRing progress={ring} label={formatClock(remain)} caption={mining ? "Time remaining" : "Session duration"} />
       </div>
+      <div className="mc-balance">
+        <div>
+          <p className="text-xs text-gray-400">Mining balance</p>
+          <p className="mc-amount">{formatBalance(balance, live)} <span>{TOKEN_SYMBOL}</span></p>
+        </div>
+        <span className="mc-status">{mining ? "Mining active" : claimReady ? "Claim ready" : "Idle"}</span>
+      </div>
+      {castText && <p className="mt-2 line-clamp-2 text-sm text-gray-400">{castText}</p>}
 
       {mining ? (
         <p className="mt-6 flex h-12 items-center justify-center rounded-xl bg-[#0b0f17] text-sm text-gray-400">
-          Session in progress · Wait to recast
+          Next cast unlocks when this session ends
         </p>
       ) : (
         <button
@@ -508,8 +511,8 @@ function MineCard({
           onClick={onCast}
           className="mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#8a63d2] text-base font-semibold text-white transition hover:bg-[#7c52c8]"
         >
-          <Send className="size-4" />
-          Cast to Mine
+          {claimReady ? <Wallet className="size-4" /> : <Send className="size-4" />}
+          {claimReady ? "Claim reward" : "Cast to mine"}
         </button>
       )}
 
@@ -537,16 +540,17 @@ function SessionRing({ progress, label, caption }: { progress: number; label: st
   const c = 2 * Math.PI * r
   const offset = c * (1 - Math.max(0, Math.min(1, progress)))
   return (
-    <div className="relative grid size-40 place-items-center" aria-label={`${caption} ${label}`}>
-      <svg viewBox="0 0 128 128" className="size-40">
-        <circle cx="64" cy="64" r={r} fill="none" stroke="#1f2937" strokeWidth="8" />
+    <div className="mc-dial">
+      <svg viewBox="0 0 128 128" aria-hidden="true">
+        <circle cx="64" cy="64" r="61" fill="none" stroke="#8a63d2" opacity=".55" strokeDasharray="0.9 5.09" strokeWidth="2.5" />
+        <circle cx="64" cy="64" r={r} fill="#10131e" stroke="#302b40" strokeWidth="3" />
         <circle
           cx="64"
           cy="64"
           r={r}
           fill="none"
           stroke="#8a63d2"
-          strokeWidth="8"
+          strokeWidth="3"
           strokeLinecap="round"
           strokeDasharray={c}
           strokeDashoffset={offset}
@@ -555,8 +559,9 @@ function SessionRing({ progress, label, caption }: { progress: number; label: st
         />
       </svg>
       <div className="absolute text-center">
-        <p className="text-xl font-semibold tabular-nums text-white">{label}</p>
-        <p className="text-sm text-gray-400">{caption}</p>
+        <FarcasterMark className="mx-auto mb-2 size-5 text-[#af8aee]" />
+        <p className="mc-time">{label}</p>
+        <p className="mt-1 text-xs text-gray-400">{caption}</p>
       </div>
     </div>
   )
@@ -645,7 +650,8 @@ function InvitePanel({
         </p>
       )}
 
-      <h3 className="mt-6 font-semibold text-white">Creator Reward Rules</h3>
+      <details className="mt-5 border-y border-gray-800 py-3">
+      <summary>Creator reward rules</summary>
       <p className="mt-1 text-sm text-gray-400">
         Referral never changes the invited miner's reward. Creator weight is verified from Farcaster followers when a session starts.
       </p>
@@ -653,6 +659,7 @@ function InvitePanel({
         1k followers = 10× · 10k = 45× · 100k = 100×. No wallet can claim above the 100× onchain ceiling for one 24-hour window.
       </p>
 
+      </details>
       {!invitedBy ? (
         <div className="mt-6">
           <h3 className="font-semibold text-white">Who invited you?</h3>
@@ -732,7 +739,7 @@ function YourCasts({ casts, now }: { casts: MinerState["casts"]; now: number | n
     <section className="mt-4 rounded-2xl border border-gray-800 bg-[#141b26] p-4">
       <h2 className="font-semibold text-white">Mining Activity</h2>
       {casts.length === 0 ? (
-        <p className="mt-2 text-sm text-gray-400">No sessions yet. Click 'Cast to Mine' to start your first session.</p>
+        <p className="mt-2 text-sm text-gray-400">Your first mining cast will appear here.</p>
       ) : (
         <ul className="mt-3 grid gap-3">
           {casts.map((cast) => (
@@ -776,9 +783,9 @@ function NetworkPanel({
     <section className="rounded-2xl border border-gray-800 bg-[#141b26] p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-white">Network State</h2>
+          <h2 className="text-lg font-semibold text-white">Network preview</h2>
           <p className="mt-1 text-sm text-gray-400">
-            This is a client-side mining simulation. Only contract reads below represent Base state.
+            Simulated activity and supply. See Token for onchain balances.
           </p>
         </div>
         <p className="shrink-0 text-right">
@@ -804,7 +811,8 @@ function NetworkPanel({
         {formatSupply(daily)} / day in this Era
       </p>
 
-      <h3 className="mt-6 font-semibold text-white">Reward Halving Curve</h3>
+      <details className="mt-5 border-y border-gray-800 py-3">
+      <summary>Reward halving schedule</summary>
       <ul className="mt-3 grid gap-2">
         {[0, 1, 2, 3, 4, 5].map((index) => {
           const current = index === era
@@ -826,7 +834,8 @@ function NetworkPanel({
         })}
       </ul>
 
-      <h3 className="mt-6 font-semibold text-white">Live Network Feed</h3>
+      </details>
+      <h3 className="mt-6 font-semibold text-white">Network activity</h3>
       <ul className="mt-3 grid gap-3">
         {mining && castText ? (
           <FeedRow handle={handle || "you"} text={castText} ago={now && castAt ? now - castAt : 0} you />
@@ -981,7 +990,7 @@ function TokenPanel({
               {TOKENCAST_CONTRACT_ADDRESS.slice(0, 6)}...{TOKENCAST_CONTRACT_ADDRESS.slice(-4)} <ExternalLink className="inline size-3" />
             </a>
             <span className="text-right text-gray-300">Minted: {onchain ? formatSupply(onchain.mintedSupply) : "..."}</span>
-            {payoutOk && payout && onchain?.walletBalance !== null ? <span className="col-span-2 text-gray-300">Wallet balance: {formatTokens(onchain?.walletBalance ?? 0)} {TOKEN_SYMBOL}</span> : null}
+            {payoutOk && payout && onchain?.walletBalance != null ? <span className="col-span-2 text-gray-300">Wallet balance: {formatTokens(onchain.walletBalance)} {TOKEN_SYMBOL}</span> : null}
           </div>
         ) : null}
         {onchainError ? <p className="mt-2 text-xs text-red-300">{onchainError}</p> : null}
@@ -1002,7 +1011,7 @@ function TokenPanel({
         <p className="mt-2 text-sm text-gray-300">
           Browser preview only: <span className="font-bold text-[#a78bfa]">{formatTokens(balance)}</span> {TOKEN_SYMBOL}
         </p>
-        <p className="mt-1 text-xs text-gray-400">Withdrawable status comes from the server ledger and Base receipt, never this browser preview.</p>
+        <p className="mt-1 text-xs text-gray-400">Only verified mining rewards can be claimed.</p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <input
@@ -1068,7 +1077,8 @@ function TokenPanel({
         ))}
       </dl>
 
-      <h3 className="mt-6 font-semibold text-white">Halving Dynamics</h3>
+      <details className="mt-5 border-y border-gray-800 py-3">
+      <summary>How issuance works</summary>
       <p className="mt-2 text-sm text-gray-400">
         Era 0 benchmark is {formatTokens(INITIAL_SESSION_REWARD)} {TOKEN_SYMBOL} per 24 hours at 1×. Creator weight reaches 100× at 100k verified followers, while an onchain 100× ceiling and one claim per 24 hours limit each wallet.
         Rewards halve every 272 days, independent of miner count. At the 100,000 daily-miner target, the schedule reaches roughly 99% planned issuance in five years; undistributed pool is reserved for community airdrops after the finalisation window.
@@ -1089,6 +1099,7 @@ function TokenPanel({
       >
         {copied ? "Copied Spec" : "Copy Tokenomics Spec"}
       </button>
+      </details>
     </section>
   )
 }
@@ -1138,7 +1149,6 @@ function DaoPanel() {
     <section className="rounded-2xl border border-[#8a63d2]/40 bg-[#141b26] p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="flex items-center gap-2 text-sm font-semibold text-[#c4b5fd]"><Vote className="size-4" /> Community governance</p>
           <h2 className="mt-1 text-xl font-bold text-white">MineCast DAO</h2>
           <p className="mt-1 text-sm text-gray-400">Stake for 30 days, then activate voting power.</p>
         </div>
@@ -1152,7 +1162,6 @@ function DaoPanel() {
         <p className="mt-3 text-sm text-gray-400">Total staked</p>
         <p className="mt-1 text-xl font-bold text-white">{totalStaked === null ? "—" : formatTokens(Number(totalStaked))} <span className="text-sm font-normal text-gray-400">{TOKEN_SYMBOL}</span></p>
         <button type="button" disabled className="mt-3 h-11 w-full rounded-xl bg-[#8a63d2] font-semibold text-white opacity-50">Stake · Coming soon</button>
-        <p className="mt-2 text-xs text-gray-400">Staking transactions will be available after V3 integration.</p>
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1169,7 +1178,6 @@ function DaoPanel() {
       {!DAO_IS_DEPLOYED ? (
         <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
           <p className="font-semibold text-amber-100">Voting opens after V3 deployment</p>
-          <p className="mt-1 text-sm text-amber-100/80">Stake and vote will open after V3 deployment.</p>
         </div>
       ) : (
         <>
@@ -1321,7 +1329,7 @@ function NavButton({
       aria-current={active ? "page" : undefined}
       className={`flex h-16 flex-col items-center justify-center gap-1 text-sm font-semibold transition ${active ? "text-[#a78bfa]" : "text-gray-400"}`}
     >
-      {icon}
+      <span className="mc-nav-icon">{icon}</span>
       {label}
     </button>
   )
@@ -1353,24 +1361,18 @@ function Composer({
 }) {
   const titleId = useId()
   const field = useRef<HTMLTextAreaElement>(null)
+  const dialog = useRef<HTMLDialogElement>(null)
   const [text, setText] = useState(
     `⛏️ Started a 24-hour mining session for $TOKENCAST on MineCast (Era ${era}). Cast to mine!`,
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState("")
   const [activeClock, setActiveClock] = useState(() => Date.now())
-  const busyRef = useRef(false)
-  const closeRef = useRef(onClose)
-  busyRef.current = busy
-  closeRef.current = onClose
-
   useEffect(() => {
+    const sheet = dialog.current
+    sheet?.showModal()
     field.current?.focus()
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busyRef.current) closeRef.current()
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
+    return () => sheet?.close()
   }, [])
 
   useEffect(() => {
@@ -1387,25 +1389,21 @@ function Composer({
   const activeRemaining = Number.isFinite(activeEndsAt) ? Math.max(0, activeEndsAt - activeClock) : 0
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex items-end justify-center bg-black/80 p-3 sm:items-center"
-      onClick={() => {
+    <dialog ref={dialog} className="mc-dialog" aria-labelledby={titleId}
+      onCancel={(event) => {
+        event.preventDefault()
         if (!busy) onClose()
       }}
+      onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="w-full max-w-md rounded-2xl border border-gray-800 bg-[#141b26] p-4 text-white"
+        className="mc-sheet rounded-2xl border border-gray-700 bg-[#141b26] p-5 text-white"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 id={titleId} className="text-lg font-semibold">Start Mining Session</h2>
-            <p className="mt-1 text-sm text-gray-400">
-              Locks {formatTokens(reward)} {TOKEN_SYMBOL} reward for 24 hours.
-            </p>
+            <h2 id={titleId} className="text-lg font-semibold">{claimGate === "claim" ? "Claim reward" : claimGate === "active" ? "Active session" : claimGate === "cast" ? "Start mining" : "Mining session"}</h2>
+            {claimGate === "cast" && <p className="mt-1 text-sm text-gray-400">{formatTokens(reward)} {TOKEN_SYMBOL} per 24h session</p>}
           </div>
           <button
             type="button"
@@ -1463,7 +1461,7 @@ function Composer({
           {claimSucceeded ? <p className="mt-2 rounded-xl bg-green-500/15 px-3 py-2 text-sm text-green-300">Reward confirmed on Base. You can start your next mining session.</p> : null}
           {error ? <p className="mt-2 rounded-xl bg-red-500/20 px-3 py-2 text-sm text-red-300">{error}</p> : null}
           <p className="mt-3 text-sm text-gray-400">
-            In Warpcast, this opens the native composer. Mining begins only after your cast is published.
+            Publish your cast in Farcaster to start the timer.
           </p>
           <button
             type="submit"
@@ -1475,6 +1473,6 @@ function Composer({
           </button>
         </form>}
       </div>
-    </div>
+    </dialog>
   )
 }
