@@ -56,10 +56,10 @@
 .mc-era { color: #d3bdf8; background: #30263f; border: 1px solid #49375d; }
 .mc-title, .mc-tab-panel h2 { font-size: 1.42rem; font-weight: 680; letter-spacing: -.04em; }
 .mc-instrument {
-  display: grid; place-items: center; margin: 1rem 0; padding: .5rem;
-  border-block: 1px solid #363042;
-  background-image: radial-gradient(ellipse at center, #53407155, transparent 67%), radial-gradient(#9e84be38 .8px, transparent 1px);
-  background-size: auto, 10px 10px;
+  display: grid; place-items: center; margin: 1rem 0; padding: .85rem;
+  border-radius: 1rem;
+  background: radial-gradient(ellipse at 50% 78%, #30283e 0%, transparent 65%),
+              linear-gradient(155deg, #1a1a26, #0e111a 75%);
 }
 .mc-dial { position: relative; display: grid; place-items: center; width: clamp(10rem, 46vw, 13rem); }
 .mc-dial > svg { width: 100%; }
@@ -85,7 +85,7 @@
   padding: .25rem; background: #15151feb; backdrop-filter: blur(16px); box-shadow: 0 7px 24px #0007;
 }
 .mc-nav button { height: 3.15rem; gap: .1rem; font-size: .7rem; border-radius: .95rem; }
-.mc-nav button[aria-current] { background: #33263f; color: #d9baff; }
+.mc-nav button[aria-current] { color: #d9baff; text-decoration: underline; text-decoration-color: #a785dc; text-underline-offset: .22rem; }
 .mc-nav-icon { display: grid; place-items: center; height: 1.45rem; }
 .mc-nav-icon svg { width: 1.1rem; }
 .mc-sheet { max-height: calc(100dvh - 2rem); overflow-y: auto; overscroll-behavior: contain; }

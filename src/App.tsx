@@ -436,8 +436,8 @@ function halvingRatio(mined: number): number {
 
 function FarcasterMark({ className }: { className: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true" className={className}>
-      <path d="M2 3h20v2h-2.5v3H22v13h-4l-2-10a4.1 4.1 0 0 0-8 0L6 21H2V8h2.5V5H2Z" />
+    <svg viewBox="10 11 34 34" fill="white" aria-hidden="true" className={className}>
+      <path d="M12 15h30v3.5h-4v3.5h4v19h-6l-2.4-12.5C32.8 24.2 30.3 22 27 22s-5.8 2.2-6.6 6.5L18 41h-6V22h4v-3.5h-4Z" />
     </svg>
   )
 }
@@ -563,7 +563,7 @@ function SessionRing({ progress, label, caption }: { progress: number; label: st
         />
       </svg>
       <div className="absolute text-center">
-        <FarcasterMark className="mx-auto mb-2 size-5 text-gray-300" />
+        <FarcasterMark className="mx-auto mb-2 size-5" />
         <p className="mc-time">{label}</p>
         <p className="mt-1 text-xs text-gray-400">{caption}</p>
       </div>
