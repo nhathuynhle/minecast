@@ -310,7 +310,7 @@ export default function App() {
 
       <nav className="mc-nav" aria-label="Main navigation">
         <div className="grid grid-cols-5">
-          <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<FarcasterMark className="size-5" />} />
+          <NavButton active={tab === "mine"} onClick={() => setTab("mine")} label="Mine" icon={<FarcasterMark className="size-5 fill-gray-400" />} />
           <NavButton active={tab === "invite"} onClick={() => setTab("invite")} label="Squad" icon={<Users className="size-5" />} />
           <NavButton active={tab === "network"} onClick={() => setTab("network")} label="Network" icon={<Radio className="size-5" />} />
           <NavButton active={tab === "token"} onClick={() => setTab("token")} label="Token" icon={<Layers className="size-5" />} />
