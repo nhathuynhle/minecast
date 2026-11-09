@@ -2,12 +2,12 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Layers, Radio, Send, Users, X, Copy, Check, Share2, Wallet, ExternalLink, Loader2, RefreshCw, ShieldCheck, Vote } from "lucide-react"
 import { formatUnits } from "viem"
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, farcasterFetch, type FarcasterIdentity } from "@/lib/farcaster"
+import { readPendingCast, savePendingCast } from "@/lib/pending-cast"
 import {
   accrued,
   cleanHandle,
   EMPTY_MINER,
   loadMiner,
-  openSession,
   saveMiner,
   settle,
   validHandle,
@@ -102,14 +102,18 @@ export default function App() {
   const [claimSucceeded, setClaimSucceeded] = useState(false)
   const [claimStatus, setClaimStatus] = useState<ClaimStatus>("idle")
   const [farcasterIdentity, setFarcasterIdentity] = useState<FarcasterIdentity | null>(null)
+  const [pendingCast, setPendingCast] = useState("")
+  const sessionRevision = useRef(0)
   const minerRef = useRef(miner)
   minerRef.current = miner
 
   async function syncServerSession() {
+    const revision = sessionRevision.current
     try {
       const response = await farcasterFetch("/api/mine/session")
       if (!response.ok) return
       const data = await response.json()
+      if (revision !== sessionRevision.current) return
       const row = data.session
       if (!row) {
         setMiner((current) => ({ ...current, session: null }))
@@ -163,6 +167,7 @@ export default function App() {
       const username = cleanHandle(identity.username)
       if (!validHandle(username)) return
       setFarcasterIdentity({ ...identity, username })
+      setPendingCast(readPendingCast(identity.fid))
       // Never preserve a browser-entered or cached identity. The SDK context is
       // the only source of truth for the signed-in miner shown in the UI.
       setMiner((current) => ({ ...current, handle: username }))
@@ -203,10 +208,87 @@ export default function App() {
       setClaimAmount(data.amountWei || "0")
       setClaimEndsAt(typeof data.endsAt === "string" ? data.endsAt : null)
       setClaimGate(data.eligible ? "cast" : data.reason === "active_session" ? "active" : "claim")
+      if (data.reason === "active_session" && farcasterIdentity) {
+        savePendingCast(farcasterIdentity.fid, "")
+        setPendingCast("")
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Unable to check your reward.")
       setClaimGate("error")
     }
+  }
+
+  async function startMiningCast(text: string, recoveryIdentifier?: string): Promise<boolean> {
+    const identity = farcasterIdentity
+    const handle = cleanHandle(identity?.username ?? "")
+    if (!identity || !validHandle(handle)) throw new Error("Open MineCast inside Farcaster to verify your miner identity.")
+
+    // Connect before publishing, so a missing wallet cannot strand a new cast.
+    let wallet = minerRef.current.payout
+    if (!wallet || !validPayout(wallet)) {
+      wallet = await connectFarcasterWallet(TOKENCAST_CHAIN_ID)
+      setPayout(wallet)
+    }
+
+    let identifier = recoveryIdentifier?.trim() || pendingCast
+    if (!identifier) {
+      const eligibility = await farcasterFetch("/api/mine/eligibility")
+      const eligibilityData = await eligibility.json()
+      if (!eligibility.ok || !eligibilityData.eligible) {
+        await refreshClaimGate()
+        throw new Error(eligibilityData.error || (eligibilityData.reason === "active_session"
+          ? "Your mining session is already active."
+          : "Claim your previous reward before posting another mining cast."))
+      }
+      const posted = await composeOnFarcaster(text)
+      if (posted.status !== "posted" || !posted.hash) {
+        throw new Error(posted.status === "cancelled"
+          ? "No cast was returned. If you already posted, paste its link below to start mining."
+          : posted.status === "unavailable"
+            ? "Open MineCast inside Farcaster to compose a cast."
+            : "Farcaster did not return your cast. If it was published, paste its link below; you do not need to post again.")
+      }
+      identifier = posted.hash
+    }
+
+    setPendingCast(identifier)
+    savePendingCast(identity.fid, identifier)
+    sessionRevision.current++
+    const serverResponse = await farcasterFetch("/api/mine/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(/^0x[a-fA-F0-9]{40}$/.test(identifier) ? { castHash: identifier } : { castUrl: identifier }),
+        walletAddress: wallet,
+        referrerHandle: minerRef.current.invitedBy,
+      }),
+    })
+    const verified = await serverResponse.json().catch(() => ({}))
+    if (!serverResponse.ok) throw new Error(verified.error || "Could not verify your cast. Retry verification; do not post again.")
+    const reward = Number(formatUnits(BigInt(verified.rewardWei), 18))
+    const endsAt = Date.parse(verified.endsAt)
+    const startedAt = Date.parse(verified.startedAt)
+    const era = Number(verified.era)
+    if (!Number.isFinite(reward) || reward <= 0 || !Number.isFinite(startedAt) || !Number.isFinite(endsAt) ||
+        endsAt <= startedAt || !Number.isInteger(era) || era < 0) throw new Error("The server returned an invalid mining session. Retry verification.")
+
+    // Use the published text and original server timer, including on a retry.
+    // The native composer may have changed all of the suggested text/embeds.
+    const castText = typeof verified.castText === "string" ? verified.castText : ""
+    const t = Date.now()
+    sessionRevision.current++
+    setMiner((current) => {
+      const settled = settle(current, t)
+      const record = { id: verified.sessionId, at: startedAt, text: castText, reward, era }
+      return { ...settled, handle, session: { startedAt, endsAt, reward, era, text: castText },
+        casts: [record, ...settled.casts.filter((cast) => cast.id !== record.id)].slice(0, 12) }
+    })
+    savePendingCast(identity.fid, "")
+    setPendingCast("")
+    setNotice("")
+    setNow(t)
+    setTab("mine")
+    return true
   }
 
   return (
@@ -330,6 +412,12 @@ export default function App() {
           gateBusy={gateBusy}
           claimSucceeded={claimSucceeded}
           claimStatus={claimStatus}
+          pendingCast={pendingCast}
+          onClearPending={() => {
+            if (farcasterIdentity) savePendingCast(farcasterIdentity.fid, "")
+            setPendingCast("")
+            setNotice("")
+          }}
           onRetry={() => void refreshClaimGate()}
           onClaim={async () => {
             setGateBusy(true)
@@ -365,60 +453,7 @@ export default function App() {
             } finally { setGateBusy(false) }
           }}
           onNotice={setNotice}
-          onPublish={async (text) => {
-            const current = minerRef.current
-            const handle = cleanHandle(farcasterIdentity?.username ?? "")
-            if (!farcasterIdentity || !validHandle(handle)) {
-              setNotice("Open MineCast inside Farcaster to verify your miner identity.")
-              return false
-            }
-            const eligibility = await farcasterFetch("/api/mine/eligibility")
-            const eligibilityData = await eligibility.json()
-            if (!eligibility.ok || !eligibilityData.eligible) {
-              setNotice(eligibilityData.error || "Claim your previous settled reward before posting another mining cast.")
-              return false
-            }
-            const posted = await composeOnFarcaster(text)
-            if (posted.status !== "posted" || !posted.hash) {
-              setNotice("Composer was closed before posting. Session not started.")
-              return false
-            }
-            const wallet = minerRef.current.payout
-            if (!validPayout(wallet) || !wallet) {
-              setNotice("Connect your Base wallet before starting a mining session.")
-              return false
-            }
-            const serverResponse = await farcasterFetch("/api/mine/start", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ castHash: posted.hash, walletAddress: wallet, referrerHandle: current.invitedBy }),
-            })
-            if (!serverResponse.ok) {
-              const data = await serverResponse.json().catch(() => ({}))
-              setNotice(data.error || "The server could not verify this cast.")
-              return false
-            }
-            const verified = await serverResponse.json()
-            const verifiedReward = Number(BigInt(verified.rewardWei) / 10n ** 18n)
-            const verifiedEndsAt = Date.parse(verified.endsAt)
-            const verifiedEra = Number(verified.era)
-            if (!Number.isFinite(verifiedReward) || verifiedReward <= 0 || !Number.isFinite(verifiedEndsAt) || !Number.isInteger(verifiedEra) || verifiedEra < 0) {
-              setNotice("The server returned an invalid mining session.")
-              return false
-            }
-            const t = Date.now()
-            const settled = settle({ ...minerRef.current, handle }, t)
-            const mined = Math.min(MAX_SUPPLY, simulatedMined(t) + settled.balance)
-            const next = openSession(settled, t, text, handle, mined, verifiedReward, verifiedEra)
-            if (!next) {
-              setNotice("Max supply reached. No more tokens available to mine.")
-              return false
-            }
-            setMiner({ ...next, session: next.session ? { ...next.session, endsAt: verifiedEndsAt } : null })
-            setNow(t)
-            setTab("mine")
-            return true
-          }}
+          onPublish={startMiningCast}
         />
       ) : null}
     </div>
@@ -1346,6 +1381,7 @@ function Composer({
   onNotice,
   onClose,
   onPublish,
+  pendingCast, onClearPending,
   claimGate, claimAmount, claimEndsAt, gateBusy, claimSucceeded, claimStatus, onClaim, onRetry,
 }: {
   era: number
@@ -1353,7 +1389,9 @@ function Composer({
   notice: string
   onNotice: (value: string) => void
   onClose: () => void
-  onPublish: (text: string) => Promise<boolean>
+  onPublish: (text: string, recoveryIdentifier?: string) => Promise<boolean>
+  pendingCast: string
+  onClearPending: () => void
   claimGate: "checking" | "active" | "claim" | "cast" | "error"
   claimAmount: string
   claimEndsAt: string | null
@@ -1371,6 +1409,7 @@ function Composer({
   )
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState("")
+  const [castLink, setCastLink] = useState("")
   const [activeClock, setActiveClock] = useState(() => Date.now())
   useEffect(() => {
     const sheet = dialog.current
@@ -1386,11 +1425,26 @@ function Composer({
     return () => window.clearInterval(interval)
   }, [claimGate, claimEndsAt])
 
-  const error = localError || (claimStatus === "error" || claimGate === "error" ? notice : "")
+  const error = localError || (claimGate === "cast" || claimStatus === "error" || claimGate === "error" ? notice : "")
   const claimInProgress = gateBusy && claimStatus !== "error"
-  const tooLong = text.trim().length > 1024
+  const draftBytes = new TextEncoder().encode(text.trim()).length
+  const tooLong = draftBytes > 1024
   const activeEndsAt = claimEndsAt ? Date.parse(claimEndsAt) : Number.NaN
   const activeRemaining = Number.isFinite(activeEndsAt) ? Math.max(0, activeEndsAt - activeClock) : 0
+
+  async function publish(identifier?: string) {
+    if (busy) return
+    setLocalError("")
+    onNotice("")
+    setBusy(true)
+    try {
+      if (await onPublish(text.trim(), identifier)) onClose()
+    } catch (cause) {
+      setLocalError(cause instanceof Error ? cause.message : "Could not confirm your cast. Please retry.")
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <dialog ref={dialog} className="mc-dialog" aria-labelledby={titleId}
@@ -1430,52 +1484,56 @@ function Composer({
           {claimGate === "claim" ? <button type="button" disabled={gateBusy} onClick={() => void onClaim()} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold disabled:opacity-50">{claimInProgress ? claimStatus === "signing_wallet_login" ? "Sign in wallet…" : claimStatus === "sending_tx" ? "Confirming on Base…" : "Preparing secure claim…" : "Claim reward"}</button> : null}
           {claimGate === "active" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl border border-[#8a63d2]/60 font-semibold text-[#c4b5fd]">Refresh reward status</button> : null}
           {claimGate === "error" ? <button type="button" onClick={onRetry} className="h-12 w-full rounded-xl bg-[#8a63d2] font-semibold">Retry</button> : null}
-        </div> : <form
+        </div> : <>
+        <form
           className="mt-3"
           onSubmit={(event) => {
             event.preventDefault()
-            const body = text.trim()
-            if (!body) {
-              setLocalError("Cast text cannot be empty.")
+            if (!pendingCast && tooLong) {
+              setLocalError("Suggested text exceeds 1024 bytes.")
               return
             }
-            if (body.length > 1024) {
-              setLocalError("Cast text exceeds 1024 characters.")
-              return
-            }
-            setLocalError("")
-            onNotice("")
-            setBusy(true)
-            void onPublish(body).then((ok) => {
-              setBusy(false)
-              if (ok) onClose()
-            })
+            void publish()
           }}
         >
+          {!pendingCast ? <>
           <textarea
             ref={field}
             value={text}
             onChange={(event) => setText(event.target.value)}
             rows={4}
             maxLength={1100}
-            aria-label="Cast Content"
+            aria-label="Suggested cast text (optional)"
+            placeholder="Write here or in Farcaster…"
+            disabled={busy}
             className="w-full resize-none rounded-xl border border-gray-700 bg-[#0b0f17] px-3 py-3 text-base leading-normal text-white outline-none focus:border-[#8a63d2]"
           />
-          <p className="mt-2 text-right text-sm text-gray-400 tabular-nums">{text.trim().length}/1024</p>
+          <p className="mt-2 text-right text-sm text-gray-400 tabular-nums">{draftBytes}/1024 bytes</p>
+          </> : <p className="rounded-xl bg-[#8a63d2]/15 p-3 text-sm text-[#ddd6fe]">Your cast is saved for verification. No need to post again.</p>}
           {claimSucceeded ? <p className="mt-2 rounded-xl bg-green-500/15 px-3 py-2 text-sm text-green-300">Reward confirmed on Base. You can start your next mining session.</p> : null}
-          {error ? <p className="mt-2 rounded-xl bg-red-500/20 px-3 py-2 text-sm text-red-300">{error}</p> : null}
+          {error ? <p role="alert" className="mt-2 rounded-xl bg-red-500/20 px-3 py-2 text-sm text-red-300">{error}</p> : null}
           <p className="mt-3 text-sm text-gray-400">
-            Publish your cast in Farcaster to start the timer.
+            {pendingCast ? "The timer starts once your cast is verified." : "Edit your text or add photos in Farcaster, then publish to start mining."}
           </p>
           <button
             type="submit"
-            disabled={busy || tooLong}
+            disabled={busy || (!pendingCast && tooLong)}
             className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#8a63d2] text-base font-semibold text-white transition hover:bg-[#7c52c8] disabled:opacity-50"
           >
             <Send className="size-4" />
-            {busy ? "Posting cast…" : "Post Cast & Mine for 24h"}
+            {busy ? pendingCast ? "Verifying cast…" : "Waiting for Farcaster…" : pendingCast ? "Retry cast verification" : "Continue in Farcaster"}
           </button>
-        </form>}
+          {pendingCast ? <button type="button" disabled={busy} className="mt-2 w-full py-2 text-sm text-gray-400" onClick={() => { onClearPending(); setLocalError("") }}>Use a different cast</button> : null}
+        </form>
+        <details className="mt-4 text-sm" open={Boolean(error) || undefined}>
+          <summary className="cursor-pointer text-[#c4b5fd]">Already posted? Verify your cast</summary>
+          <form className="mt-3 space-y-3" onSubmit={(event) => { event.preventDefault(); if (castLink.trim()) void publish(castLink.trim()) }}>
+            <p className="text-gray-400">Paste the link to your cast from the last 24 hours.</p>
+            <input aria-label="Published cast link" type="text" value={castLink} onChange={(event) => setCastLink(event.target.value)} placeholder="https://farcaster.xyz/you/0x…" disabled={busy} className="w-full rounded-xl border border-gray-700 bg-[#0b0f17] px-3 py-3 text-white" />
+            <button type="submit" disabled={busy || !castLink.trim()} className="h-11 w-full rounded-xl border border-[#8a63d2]/60 text-[#c4b5fd] disabled:opacity-50">Verify & start mining</button>
+          </form>
+        </details>
+        </>}
       </div>
     </dialog>
   )

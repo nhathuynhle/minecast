@@ -1,4 +1,5 @@
 import { error, json, readCurrentEra, reconcileClaimedAllocations, requireFarcasterUser, requireWallet, settleEndedMineSessions, supabase } from "../_lib/backend";
+import { CastLookupError, lookupMiningCast, requireRecentCast } from "../_lib/mining-cast";
 
 const SESSION_SECONDS = 24 * 60 * 60;
 // UI estimate. The actual settlement divides the fixed daily budget across
@@ -20,22 +21,40 @@ function followerWeight(followers: number): bigint {
 
 export const config = { runtime: "edge" };
 
+type SessionRow = { id: string; fid: number; wallet_address: string; reward_wei: string; started_at: string; ends_at: string; settled_at: string | null };
+
+async function sessionForCast(hash: string): Promise<SessionRow | undefined> {
+  const response = await supabase(`mining_sessions?cast_hash=eq.${hash}&select=id,fid,wallet_address,reward_wei::text,started_at,ends_at,settled_at&limit=1`);
+  return (await response.json())[0];
+}
+
+function sessionResult(session: SessionRow, era: number, castText: string, extra = {}) {
+  return { sessionId: session.id, startedAt: session.started_at, endsAt: session.ends_at, rewardWei: session.reward_wei, era, castText, ...extra };
+}
+
+async function resumeSession(session: SessionRow, fid: number, wallet: string, castText: string) {
+  if (Number(session.fid) !== fid || session.wallet_address.toLowerCase() !== wallet.toLowerCase()) {
+    throw new CastLookupError("This cast is already linked to another mining session.", 409);
+  }
+  if (session.settled_at || Date.parse(session.ends_at) <= Date.now()) {
+    throw new CastLookupError("This cast has already been used. Claim your reward before posting a new cast.", 409);
+  }
+  return json(sessionResult(session, await readCurrentEra(), castText, { resumed: true }));
+}
+
 export default async function handler(request: Request) {
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   try {
     const fid = await requireFarcasterUser(request);
-    const { castHash, walletAddress, referrerHandle } = await request.json();
+    const { castHash, castUrl, walletAddress, referrerHandle } = await request.json();
     const wallet = requireWallet(walletAddress);
-    if (typeof castHash !== "string" || !/^0x[a-fA-F0-9]{40}$/.test(castHash)) throw new Error("A valid Farcaster cast hash is required.");
 
     const neynarKey = process.env.NEYNAR_API_KEY;
     if (!neynarKey) throw new Error("NEYNAR_API_KEY is not configured.");
-    const castResponse = await fetch(`https://api.neynar.com/v2/farcaster/cast?identifier=${encodeURIComponent(castHash)}&type=hash`, {
-      headers: { "x-api-key": neynarKey },
-    });
-    if (!castResponse.ok) throw new Error("Could not verify the Farcaster cast.");
-    const cast = (await castResponse.json()).cast;
+    const cast = await lookupMiningCast(castHash ?? castUrl, neynarKey);
     if (!cast || Number(cast.author?.fid) !== fid) throw new Error("The cast does not belong to the authenticated Farcaster account.");
+    const canonicalHash = cast.hash.toLowerCase();
+    const castText = typeof cast.text === "string" ? cast.text : "";
 
     const canonicalUsername = typeof cast.author?.username === "string"
       ? cast.author.username.replace(/^@+/, "").toLowerCase()
@@ -51,7 +70,13 @@ export default async function handler(request: Request) {
       throw new Error("Use an Ethereum wallet verified on your Farcaster profile as the payout wallet.");
     }
 
+    // Retrying after a lost response must return the original timer/reward,
+    // never create or extend a second session for the same cast.
+    const prior = await sessionForCast(canonicalHash);
+    if (prior) return await resumeSession(prior, fid, wallet, castText);
+
     const now = new Date();
+    requireRecentCast(cast, now.getTime());
     const endsAt = new Date(now.getTime() + SESSION_SECONDS * 1000);
     const referralCode = `MC${fid.toString(36).toUpperCase()}`;
     // A server session, not the browser timer, is authoritative. Settle any
@@ -95,17 +120,30 @@ export default async function handler(request: Request) {
     const active = await supabase(`mining_sessions?fid=eq.${fid}&settled_at=is.null&select=id,ends_at&order=ends_at.asc&limit=1`);
     const [activeSession] = await active.json() as Array<{ id: string; ends_at: string }>;
     if (activeSession) {
-      throw new Error(`Your active mining session ends at ${new Date(activeSession.ends_at).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.`);
+      const concurrent = await sessionForCast(canonicalHash);
+      if (concurrent) return await resumeSession(concurrent, fid, wallet, castText);
+      throw new CastLookupError(`Your active mining session ends at ${new Date(activeSession.ends_at).toLocaleString("en-GB", { timeZone: "UTC", timeZoneName: "short" })}.`, 409);
     }
 
     const era = await readCurrentEra();
     const rewardWei = (BASE_REWARD_WEI >> BigInt(era)) * rewardWeight;
     const estimatedRewardWei = rewardWei;
-    const created = await supabase("mining_sessions", {
-      method: "POST",
-      body: JSON.stringify({ fid, cast_hash: castHash.toLowerCase(), wallet_address: wallet, reward_wei: estimatedRewardWei.toString(), reward_weight: rewardWeight.toString(), emission_day: now.toISOString().slice(0, 10), started_at: now.toISOString(), ends_at: endsAt.toISOString() }),
-    });
+    let created: Response;
+    try {
+      created = await supabase("mining_sessions", {
+        method: "POST",
+        body: JSON.stringify({ fid, cast_hash: canonicalHash, wallet_address: wallet, reward_wei: estimatedRewardWei.toString(), reward_weight: rewardWeight.toString(), emission_day: now.toISOString().slice(0, 10), started_at: now.toISOString(), ends_at: endsAt.toISOString() }),
+      });
+    } catch (cause) {
+      // The database unique constraints arbitrate simultaneous retries.
+      const concurrent = await sessionForCast(canonicalHash);
+      if (concurrent) return await resumeSession(concurrent, fid, wallet, castText);
+      throw cause;
+    }
     const [session] = await created.json();
-    return json({ sessionId: session.id, endsAt: session.ends_at, rewardWei: estimatedRewardWei.toString(), era, referralQualified: Boolean(inviterFid) }, 201);
-  } catch (cause) { return error(cause); }
+    return json(sessionResult({ ...session, reward_wei: estimatedRewardWei.toString() }, era, castText, { referralQualified: Boolean(inviterFid) }), 201);
+  } catch (cause) {
+    if (cause instanceof CastLookupError) return json({ error: cause.message }, cause.status);
+    return error(cause);
+  }
 }

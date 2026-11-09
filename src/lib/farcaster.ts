@@ -3,7 +3,7 @@ type MiniSdk = {
   context: Promise<{ user?: { fid?: number; username?: string } }>
   actions: {
     ready: () => Promise<void>
-    composeCast: (opts: { text?: string }) => Promise<{ cast: { hash: string } | null } | undefined>
+    composeCast: (opts: { text?: string; close?: boolean }) => Promise<{ cast: { hash: string } | null } | undefined>
   }
   quickAuth?: { getToken: (options?: { force?: string }) => Promise<{ token: string }> }
   wallet?: {
@@ -61,17 +61,19 @@ export async function bootFarcaster(): Promise<FarcasterIdentity | null> {
 
 export async function composeOnFarcaster(
   text: string,
-): Promise<{ status: "posted" | "cancelled" | "unavailable"; hash?: string }> {
+): Promise<{ status: "posted" | "cancelled" | "unavailable" | "unknown"; hash?: string }> {
   if (typeof window === "undefined") return { status: "unavailable" }
   const sdk = await loadSdk()
   if (!sdk) return { status: "unavailable" }
   const inside = await withTimeout(sdk.isInMiniApp(), 1200, false)
   if (!inside) return { status: "unavailable" }
   try {
-    const result = await sdk.actions.composeCast({ text })
-    return result?.cast ? { status: "posted", hash: result.cast.hash } : { status: "cancelled" }
+    const result = await sdk.actions.composeCast({ text, close: false })
+    if (result?.cast && /^0x[a-fA-F0-9]{40}$/.test(result.cast.hash)) return { status: "posted", hash: result.cast.hash }
+    return { status: result?.cast === null ? "cancelled" : "unknown" }
   } catch {
-    return { status: "cancelled" }
+    // A transport error does not prove that the user cancelled publication.
+    return { status: "unknown" }
   }
 }
 

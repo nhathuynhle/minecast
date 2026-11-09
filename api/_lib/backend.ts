@@ -226,6 +226,7 @@ export async function verifyClaimWalletLogin(fid: number, value: unknown, login:
   if (!login || typeof login !== "object") throw new Error("A signed wallet login is required before withdrawal.");
   const input = login as Partial<ClaimWalletLogin>;
   if (
+    typeof input.expiresAt !== "number" ||
     !Number.isSafeInteger(input.expiresAt) ||
     typeof input.nonce !== "string" ||
     typeof input.proof !== "string" ||
