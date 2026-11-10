@@ -28,6 +28,14 @@ export async function checkBrowser(config, rpc, miner, t) {
     localStorage.setItem('minecast:v4:'+config.chainId+':'+config.distributor.toLowerCase()+':account',JSON.stringify(miner))
   },{config,miner})
   const page=await context.newPage(), pageErrors=[]
+  let cohortCount = 200, statsUnavailable = false
+  await page.route('**/api/v4/mining?action=stats&day=*', async route => {
+    if (statsUnavailable) return route.fulfill({status:503,json:{error:'Fixture stats outage'}})
+    const day = Number(new URL(route.request().url()).searchParams.get('day'))
+    return route.fulfill({json:{protocol:'open-v4-quorum-1',chainId:config.chainId,distributor:config.distributor,day,
+      scope:'minecast-intake',estimateBasis:'follower-only',authoritativeRewards:false,observed_at:new Date().toISOString(),
+      active_miners:'12',cohort_miners:String(cohortCount),estimated_miners:String(cohortCount),total_weight:String(cohortCount*10)}})
+  })
   page.setDefaultTimeout(15000)
   page.on('pageerror',e=>pageErrors.push(e.message))
   t.after(async()=>{ if(!page.isClosed()) { fs.mkdirSync('tests/build.local',{recursive:true}); await page.screenshot({path:'tests/build.local/v4-last-browser-state.png',fullPage:true}).catch(()=>{}) } })
@@ -36,6 +44,18 @@ export async function checkBrowser(config, rpc, miner, t) {
   await page.getByText('My mining days',{exact:true}).click()
   await page.getByRole('textbox',{name:'Mining day',exact:true}).fill('40')
   await page.getByText(/TOKENCAST claimed onchain/).waitFor()
+  const stats = page.getByTestId('live-mining-stats')
+  await stats.getByText('200',{exact:true}).waitFor()
+  cohortCount = 210
+  await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+  await stats.getByText('210',{exact:true}).waitFor()
+  statsUnavailable = true
+  await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+  await stats.getByText(/Last known/).waitFor()
+  assert.equal(await page.getByText(/TOKENCAST claimed onchain/).count(),1,'stats outage must not erase onchain claim state')
+  statsUnavailable = false
+  await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+  await stats.getByText(/Updated/).waitFor()
   assert.equal(await page.getByRole('button',{name:'Post cast & start 24h',exact:true}).isEnabled(),false,'outside Farcaster cannot cast')
   const directory='tests/build.local'
   fs.mkdirSync(directory,{recursive:true})

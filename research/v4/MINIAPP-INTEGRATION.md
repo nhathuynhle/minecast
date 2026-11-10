@@ -22,7 +22,19 @@ Countdown tính lại từ timestamp sau khi quay lại app và đồng bộ Bas
 
 Giữ luật đã yêu cầu: claim phiên cũ xong mới mở phiên mới. Phiên hết hạn, không được phân bổ, report tranh chấp hoặc quá hạn kết quả không khóa người dùng mãi. Vì V4 có review 48 giờ, luật này khiến người dùng phải chờ nhiều hơn 24 giờ giữa các phiên. Chưa tự đổi thành được mở phiên mỗi 24 giờ trong khi chờ claim.
 
-Không còn hiển thị reward cố định 386.03 trước mining: số thưởng chỉ xác định khi có report/allocations. Pool hiển thị theo ngày onchain, mỗi miner tối đa 1% pool; không tính balance browser là tiền rút được. Tab Squad/referral V2 không đưa vào V4 vì policy Open V4 hiện tại không có thưởng referral.
+Không còn hiển thị reward cố định 386.03 trước mining: số thưởng cuối cùng chỉ xác định khi có report/allocations. Có **ước tính riêng** theo follower quan sát lúc đăng ký và tổng trọng số cohort trong intake; đây không phải balance rút được. Pool hiển thị theo ngày đang chọn onchain, mỗi miner tối đa 1% pool. Tab Squad/referral V2 không đưa vào V4 vì policy Open V4 hiện tại không có thưởng referral.
+
+## Bộ đếm và ước tính gần thời gian thực
+
+Chạy thêm `supabase/migrations/20261110_v4_live_estimates.sql` sau migration phiên đào. Đây là migration bổ sung, giữ dữ liệu cũ; phiên cũ chưa có follower được đánh dấu chưa biết, không tự gán x1.
+
+- `GET /api/v4/mining?action=stats&day=N`: aggregate public theo chain/distributor/day, CDN cache 10 giây. Miniapp poll khi visible mỗi 20 giây, resync khi focus/pageshow, nên thường chậm khoảng 20–30 giây; không phải websocket realtime hoặc dữ liệu mạng node đầy đủ.
+- `Active miners`: FID có phiên bắt đầu và chưa hết 24 giờ trong intake này, không phải người đang online. `Miners in this cohort`: tất cả phiên cohort đã chọn, kể cả người đã hết phiên; chỉ cohort này chia cùng pool. Không lấy active count toàn app làm mẫu số.
+- Ước tính cả phiên = `min(pool ngày × base follower weight / tổng base follower weight cohort, pool ngày / 100)`. Chạy lại theo mỗi bản stats mới, bao gồm khi sang giờ mới và có miner mới. Nếu không đổi thành phần cohort, hoặc trần 1% vẫn áp dụng, số ước tính có thể giữ nguyên; không tự giảm pool từng giờ.
+- Chỉ đọc follower từ cast author đã xác minh bằng Neynar khi tạo phiên. Không gọi Neynar theo mỗi poll/giờ, không nhận boost từ browser. Node ×5 chưa được chứng thực không tự thêm vào estimate. Không đủ follower observations thì ẩn ước tính. UI ghi rõ follower-only và phạm vi MineCast; các app khác và validation của quorum có thể làm phần thưởng cuối khác.
+- Stats lỗi hoặc quá cũ chỉ hiển thị last known và ngừng đưa ra ước tính; không khóa claim/stake/DAO. Chỉ receipt onchain đúng mới báo claim thành công.
+
+**Không có mốc snapshot cố định 06:00 UTC trong Open V4.** `dayEnd(d) = launchTime + (d+1)×24h`. Khoảng `WORK_WINDOW=6h` chỉ cộng vào hạn bắt đầu nộp report sau `dayEnd +24h`. Nếu launch lúc 00:00 UTC ngày 1 thì cohort 0 nhận phiên [ngày 1 00:00, ngày 2 00:00), nộp report sớm nhất ngày 3 06:00, mở claim sớm nhất ngày 5 06:00 sau review. Người bắt đầu ngày 3 06:01 nằm ở cohort 2, không đổi cohort chỉ vì qua 06:00. Contract không tự gọi API; việc quan sát follower do node thực hiện và quorum ký, không được chứng minh chỉ bằng mốc thời gian Solidity.
 
 ## Thời gian đúng theo contract
 
@@ -35,7 +47,7 @@ Không còn hiển thị reward cố định 386.03 trước mining: số thư�
 ## Bật bản V4 khi đã deploy
 
 1. Triển khai/verify 5 contract theo `OPEN-V4-READINESS.md`; chốt distributor và có node đủ cọc hoạt động. Chạy thử public Sepolia trước khi chuyển mainnet.
-2. Chạy toàn bộ `supabase/migrations/20261110_v4_mining_sessions.sql` trong SQL Editor của Supabase. Migration không xóa/sửa ledger V2. Có thể chạy lại. Test local PostgreSQL không đồng nghĩa đã chạy migration production.
+2. Chạy `supabase/migrations/20261110_v4_mining_sessions.sql` rồi `supabase/migrations/20261110_v4_live_estimates.sql` trong SQL Editor của Supabase. Migration không xóa/sửa ledger V2. Có thể chạy lại. Test local PostgreSQL không đồng nghĩa đã chạy migration production.
 3. Thêm biến môi trường Vercel. Các cặp sau phải cùng địa chỉ/mạng thực:
 
 | Frontend (public, build time) | Backend (server only) |
@@ -78,6 +90,6 @@ node --test tests/v4-app-chain.test.mjs
 Remove-Item Env:V4_BROWSER_CHECK
 ```
 
-EVM integration dùng Anvil chain ID 84532 với token/ETH giả, deploy Solidity thật và chạy chính read/action helpers của app. Browser QA dùng Edge headless ở 390/320/1280px, RPC Anvil localhost; không giả receipt hay đổi dữ liệu ví production. Đây chưa phải xác nhận thao tác ví native Farcaster trên iOS/Android hoặc public Base Sepolia.
+EVM integration dùng Anvil chain ID 84532 với token/ETH giả, deploy Solidity thật và chạy chính read/action helpers của app. Browser QA dùng Edge headless ở 390/320/1280px, RPC Anvil localhost; không giả receipt hay đổi dữ liệu ví production. Aggregate live-counter trong browser test là fixture để kiểm tra refresh/outage; API và công thức SQL được kiểm tra riêng. Đây chưa phải xác nhận thao tác ví native Farcaster trên iOS/Android hoặc public Base Sepolia.
 
-Kết quả local: kiểm thử API/phase/receipt 14 pass, EVM + browser 9 pass, migration PostgreSQL/PGlite 5 pass, hồi quy cast legacy 16 pass; build legacy và V4, typecheck Edge API. PGlite kiểm tra SQL và phân quyền trên một kết nối, không phải benchmark concurrent Postgres production. Không tăng dependencies chạy app; công cụ browser/SQL được cài ở Temp.
+Kết quả local sau live estimates: API/phase/receipt/estimate 21 pass, EVM + browser 9 pass, migration PostgreSQL/PGlite 6 pass; build V4 và typecheck Edge API qua. Build legacy và 16 kiểm thử cast legacy đã qua ở lượt tích hợp trước. PGlite kiểm tra SQL và phân quyền trên một kết nối, không phải benchmark concurrent Postgres production. Không tăng dependencies chạy app; công cụ browser/SQL được cài ở Temp.
