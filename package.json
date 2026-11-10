@@ -6,7 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "v4:compile": "node research/v4/compile-open.mjs",
+    "v4:artifacts": "node research/v4/package-open.mjs",
+    "v4:test": "node --test research/v4/*.test.mjs research/v4/node/*.test.mjs",
+    "v4:plan": "node research/v4/prepare-open-deployment.mjs",
+    "v4:app-abi": "node research/v4/export-app-abi.mjs",
+    "v4:app-test": "node --test tests/v4-ui.test.mjs tests/v4-api.test.mjs tests/v4-estimates.test.mjs tests/v4-app-chain.test.mjs",
+    "v4:storage-test": "node --test tests/v4-storage.test.mjs"
   },
   "dependencies": {
     "@farcaster/miniapp-sdk": "^0.3.0",
@@ -19,13 +26,14 @@
     "viem": "^2.23.5"
   },
   "devDependencies": {
-    "@openzeppelin/contracts": "^5.6.1",
+    "@openzeppelin/contracts": "5.6.1",
     "@tailwindcss/vite": "^4.0.6",
     "@types/node": "^22.13.1",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
+    "@uniswap/v2-core": "1.0.1",
     "@vitejs/plugin-react": "^4.3.4",
-    "solc": "^0.8.38",
+    "solc": "0.8.38",
     "tailwindcss": "^4.0.6",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
