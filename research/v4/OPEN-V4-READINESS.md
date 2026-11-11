@@ -4,17 +4,39 @@ Cập nhật 2026-11-09 (Asia/Saigon). **Code local và kiểm thử đã có; c
 
 Hai quyết định của chủ dự án được áp dụng: xác nhận bằng chữ ký **hơn 2/3 tổng cọc node**, chấp nhận quorum khai sai dữ liệu xã hội; **tổng cọc tối thiểu 1 triệu TOKENCAST**, cho phép một node dev bootstrap. Bản này thay yêu cầu Nitro/ZK/source proof của các tài liệu nghiên cứu trước, không tuyên bố bảo mật tương đương Ethereum/Bitcoin.
 
+## Bản 2 (2026-11-11): phi tập trung hoá và governance
+
+Áp dụng các quyết định ngày 2026-11-11 của chủ dự án; mục này có hiệu lực hơn mọi câu cũ mâu thuẫn bên dưới.
+
+- **Phiên đào onchain.** Miner tự gọi `startMining(fid, castHash)` trên distributor; thời điểm bắt đầu là block của Base. Mỗi ví một phiên mỗi 24h. FID và cast không độc quyền khi bắt đầu, để tránh bị chiếm chỗ. Report phải cam kết đúng `sessionsHash(day)`, và mỗi allocation phải khớp phiên onchain (ví, FID, cast, giờ). Backend intake không còn bắt buộc: node đọc phiên từ chain, app chỉ dùng backend để đổi link cast thành hash và hiển thị ước tính.
+- **Không còn luật "claim xong mới đào tiếp".** Mỗi ví đào được mỗi 24h. Claim mở trong **7 ngày** sau `activateDay`, và `claimMany(days)` gom nhiều ngày một giao dịch. `startMiningAndClaim(fid, cast, days)` mở phiên mới và claim luôn các ngày đang mở (ngày không claim được thì bỏ qua), nên người đào hằng ngày chỉ trả gas 1 lần/ngày. Miner tự trả gas, không có paymaster: phí rất nhỏ nhưng mỗi tài khoản đào phải có ETH trên Base. Đây là một lớp lọc bot yếu, không thay cho việc lọc bot ở quorum. Quá hạn thì vẫn không mint. Sổ mining tháng chốt sau 16 ngày; vote tháng mở trong ngày 17–28.
+- **Node ×5 được contract tự kiểm.** Ví nhận phải là operator của một key đã ký report được certify của ngày trước, và cả chữ ký lẫn certificate phải có trước khi cửa sổ report của ngày đó mở. `nodeKey` nằm trong leaf; quorum không khai khống được, chỉ có thể bỏ sót.
+- **Loại node bỏ hoang.** Key không ký report nào trong 14 ngày report (cộng 3 ngày trễ) thì ai cũng gọi được `registry.ejectInactive(key)`. Không phạt; cọc rút lại sau 30 ngày như thoát thường. Cọc bỏ hoang ≥⅓ không còn khoá mạng vĩnh viễn.
+- **Governance theo stake.** `MineCastGovernorV4` (OpenZeppelin Governor) dùng mature stake ở block snapshot. Được đề xuất: người có ≥1 triệu stake đã trưởng thành, hoặc operator của một node đang active (`proposeAsNode`). Quorum 10% tổng phiếu active, thắng khi For > Against. Mọi thứ đi qua `TimelockController` 14 ngày; timelock tự làm admin, ai cũng execute được sau hạn.
+- **DAO được làm gì.** Chi phần treasury chưa giữ (`MineCastOpenDaoV4.spend`), và giao các **tháng UTC tương lai trọn vẹn** cho distributor mới (`TokenCastOpenV4.scheduleDistributor`). Token vẫn cưỡng chế trần 21 tỷ và ngân sách từng ngày. Mỗi ngày thuộc đúng một distributor: ngày cũ ở lại contract cũ, nên không thể mở lại hay mint bù. `launchTime` phải là 00:00 UTC.
+- Deploy 7 contract theo thứ tự token → staking → timelock → DAO → registry → distributor → governor, rồi `finalizeDistributor(distributor, timelock)`. Không có ví admin nào sau bước này.
+
+**Rủi ro đã biết sau lần rà evm-audit (checklist governance/DoS, ghim `ffe4b67`):**
+1. **Chiếm governance khi ít người bỏ phiếu (cao).** Quorum là 10% số phiếu *đang active*. Nếu ít người kích hoạt quyền vote, một nhóm nhỏ (≥1M stake, hoặc bất kỳ node active nào để đề xuất) có thể thông qua distributor mới cho các tháng sau và hút toàn bộ ngân sách các tháng đó, cùng phần treasury chưa giữ. Trần phát hành vẫn giữ, 14 ngày timelock cho thời gian phản ứng, nhưng không có quyền phủ quyết. Cần chủ dự án chọn: sàn quorum tuyệt đối, ngưỡng cao hơn riêng cho việc đổi distributor, hoặc cả hai.
+2. **Giai đoạn đầu governance phụ thuộc người stake lớn nhất (trung bình).** Ví dev còn ~1,1M token tự do; khi ít người stake, quyết định thực tế nằm ở dev.
+3. **Spam phiên onchain (trung bình, off-chain).** Mỗi phiên tốn cỡ dưới 1 cent; node phải tra Snapchain cho từng phiên. Worker đọc theo lô 50 và chỉ bị chậm; cửa sổ ký report dài 6 ngày.
+4. **Đề xuất đã queue không hết hạn (thấp).** `TimelockController` không có grace period; nên execute ngay khi tới hạn.
+5. **Thời lượng vote tính theo block (thấp).** 43.200/302.400 block giả định block 2 giây của Base; nếu Base đổi, DAO chỉnh lại bằng `GovernorSettings`.
+6. Cử tri phải tự kiểm bytecode distributor mới trước khi vote (dùng cách so runtime của `verify-open-deployment.mjs`).
+
 ## Bộ contract và công cụ
 
 | Thành phần | Trách nhiệm |
 |---|---|
-| `contracts/v4/open/TokenCastOpenV4.sol` | ERC-20, premine dev một lần, trần theo ngày/thời gian/mint trọn đời; khóa distributor một lần |
+| `contracts/v4/open/TokenCastOpenV4.sol` | ERC-20, premine dev một lần, trần theo ngày/thời gian/mint trọn đời; distributor theo từng ngày, governance chỉ giao được tháng UTC tương lai |
 | `contracts/v4/open/MineCastNodeRegistryV4.sol` | Cọc TOKENCAST thực, snapshot trọng số từng ngày, chờ gia nhập/rút, burn cọc khi có bằng chứng ký mâu thuẫn |
 | `contracts/v4/open/MineCastRewardPolicyV4.sol` | Bảng boost cố định, node ×5, trần tổng boost ×100, trần mỗi allocation 1% pool |
 | `contracts/v4/open/MineCastOpenDistributorV4.sol` | EIP-712 quorum, publication theo Merkle, kiểm tra tổng/phân bổ, claim trực tiếp, phần dư 5/95, sổ mining tháng |
 | `contracts/v4/open/MineCastOpenStakingV4.sol` | Stake khóa 30 ngày, snapshot thưởng cố định đầu kỳ, vote power đã trưởng thành, pool thưởng riêng tiền gốc |
-| `contracts/v4/MineCastMonthlyDaoV4.sol` | Tháng lẻ air/tháng chẵn burn, Yes/No theo mature stake, giữ riêng ngân sách round; không có ví admin rút treasury |
+| `contracts/v4/open/MineCastOpenDaoV4.sol` | Tháng lẻ air/tháng chẵn burn, Yes/No theo mature stake, giữ riêng ngân sách round; chỉ timelock governance chi được phần chưa giữ |
+| `contracts/v4/open/MineCastGovernorV4.sol` + OZ `TimelockController` | Đề xuất bởi node active hoặc ≥1M stake, quorum 10%, timelock 14 ngày |
 | `research/v4/open-report.mjs` | Dựng report, allocation, proof và typed data để node ký; **không** tự xác thực Farcaster |
+| `research/v4/node/open-worker.mjs` | Worker quorum: đọc phiên onchain, đối chiếu với Snapchain của chính operator, tính ×5 theo luật onchain, ký mỗi ngày đúng một digest (journal tạo độc quyền + fsync trước khi chữ ký rời process; trước khi ký đối chiếu pool với `TokenCastOpenV4.dailyEmissionForDay` và digest với `reportDigest` onchain), nộp chữ ký, publish allocation, activate. Chạy định kỳ; env ghi ở đầu file. không cần backend intake |
 | `research/v4/package-open.mjs` | ABI, bytecode, compiler standard input đầy đủ nguồn, manifest hash |
 | `research/v4/prepare-open-deployment.mjs` | Tạo giao dịch deploy chưa ký theo nonce/địa chỉ đã chọn; không broadcast |
 | `research/v4/verify-open-deployment.mjs` | Đọc chain, đối chiếu runtime với artifact và mọi liên kết token/staking/DAO/registry/distributor |
@@ -71,7 +93,7 @@ DAO mở một round/tháng trong ngày 8–21 UTC, nhưng do chốt tháng nên
 
 Khóa Solidity **0.8.38+commit.1835d247**, optimizer 200, EVM Cancun, OpenZeppelin **5.6.1**. Giữ package-lock; compiler script từ chối phiên bản khác và runtime >24.576 byte. Dùng các mẫu checkpoint, CEI và giới hạn vòng lặp như [OpenZeppelin Checkpoints](https://docs.openzeppelin.com/contracts/5.x/api/utils#Checkpoints) và [Solidity security considerations](https://docs.soliditylang.org/en/latest/security-considerations.html). Đây không phải chứng nhận an toàn từ các nguồn đó.
 
-Kết quả lần chạy 2026-11-09: **85/85 tests pass**, gồm 23 scenario Open V4 trên Anvil, hồi quy Nitro, Uniswap V2 local và mô hình số học/nguồn. Có 160 đối chiếu boost trong EVM, chặn replay/quorum/claim, minh chứng double-sign, principal/reward solvency, mature vote snapshot, chốt tháng, air/burn, thực thi kế hoạch deploy và kiểm tra bytecode. Batch 100 miner dùng **8.819.538 gas trên Anvil**, không phải báo giá phí Base. Chưa benchmark public testnet hay 10k miner thực. Compiler có cảnh báo tên identifier tương lai ở thư viện OZ, không có lỗi compile.
+Kết quả lần chạy 2026-11-11: **92/92 tests V4 pass** (31 trong `open-protocol` + worker, gồm phiên onchain, ×5 onchain, ejection, governance end-to-end) và **29/29 tests app** (kèm tích hợp app với contract thật trên Anvil); `tsc` sạch. Lần trước (2026-11-09): **85/85 tests pass**, gồm 23 scenario Open V4 trên Anvil, hồi quy Nitro, Uniswap V2 local và mô hình số học/nguồn. Có 160 đối chiếu boost trong EVM, chặn replay/quorum/claim, minh chứng double-sign, principal/reward solvency, mature vote snapshot, chốt tháng, air/burn, thực thi kế hoạch deploy và kiểm tra bytecode. Batch 100 miner dùng **8.819.538 gas trên Anvil**, không phải báo giá phí Base. Chưa benchmark public testnet hay 10k miner thực. Compiler có cảnh báo tên identifier tương lai ở thư viện OZ, không có lỗi compile.
 
 Không gọi đây là formal verification, Slither audit, fuzz toàn trạng thái hoặc fork-mainnet test: chưa chạy các loại đó. Không có auditor độc lập. Trước khi dùng tiền thật cần public testnet nhiều operator, kiểm thử worker/indexer chống ký hai report khi restart/reorg, dữ liệu ngày/tháng và tích hợp ví/app; sau đó audit đúng artifact đã ghim. [Base cũng hướng dẫn verify source và audit trước production](https://docs.base.org/base-chain/security/avoid-malicious-flags).
 

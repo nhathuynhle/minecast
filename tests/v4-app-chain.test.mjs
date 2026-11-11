@@ -21,7 +21,7 @@ const launch = 1893456000n // 2030-01-01 UTC; deterministic isolated chain.
 test('miniapp V4 reads and wallet actions integrate with actual contracts', async t => {
   const artifacts = Object.assign({}, ...Object.values(compileOpen().contracts))
   for (const [name, key] of Object.entries({ TokenCastOpenV4: 'tokenAbi', MineCastNodeRegistryV4: 'registryAbi',
-    MineCastOpenDistributorV4: 'distributorAbi', MineCastOpenStakingV4: 'stakingAbi', MineCastMonthlyDaoV4: 'daoAbi' })) {
+    MineCastOpenDistributorV4: 'distributorAbi', MineCastOpenStakingV4: 'stakingAbi', MineCastOpenDaoV4: 'daoAbi', MineCastGovernorV4: 'governorAbi' })) {
     assert.deepEqual(appABI[key], artifacts[name].abi, 'Regenerate stale app ABI: ' + name)
   }
   const child = spawn(process.env.ANVIL_BIN || 'anvil', ['--host', '127.0.0.1', '--port', '0', '--chain-id', '84532',
@@ -58,10 +58,11 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
   const token = await deploy('TokenCastOpenV4', [admin, admin, launch])
   const registry = await deploy('MineCastNodeRegistryV4', [token.address])
   const staking = await deploy('MineCastOpenStakingV4', [token.address])
-  const dao = await deploy('MineCastMonthlyDaoV4', [token.address, staking.address])
+  // Governance is not exercised by the miniapp here; any contract stands in for the timelock.
+  const dao = await deploy('MineCastOpenDaoV4', [token.address, staking.address, staking.address])
   const mining = await deploy('MineCastOpenDistributorV4', [token.address, registry.address, staking.address, dao.address])
   const config = { chainId: 84532, token: token.address, distributor: mining.address, registry: registry.address, staking: staking.address, dao: dao.address }
-  await send(token, 'finalizeDistributor', [mining.address])
+  await send(token, 'finalizeDistributor', [mining.address, staking.address])
   const key = privateKeyToAccount(generatePrivateKey())
   await send(token, 'approve', [registry.address, parseEther('1000000')])
   await send(registry, 'registerNode', [key.address, parseEther('1000000')])
@@ -73,10 +74,15 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     assert.equal(updates.at(-1).status, expected, updates.at(-1).message)
     return { updates, pending }
   }
+  async function startSession(day) {
+    await at(launch + day * DAY + 100n)
+    await action({ kind: 'startMining', fid: 42n, castHash: toHex(day + 1n, { size: 20 }) })
+  }
   async function publish(day) {
+    const [, castHash, startedAt, level] = await c.readContract({ ...mining, functionName: 'sessions', args: [day, miner] })
     const bundle = buildOpenReport({ chainId: 84532, distributor: mining.address, day, launchTime: launch,
-      sourceHash: keccak256(toHex('verified-fixture-' + day)), entries: [{ fid: 42n, wallet: miner,
-        followers: 2000n, nodeWork: false, castHash: toHex(day + 1n, { size: 20 }), startedAt: launch + day * DAY + 100n }] })
+      sourceHash: await c.readContract({ ...mining, functionName: 'sessionsHash', args: [day] }),
+      entries: [{ fid: 42n, wallet: miner, followers: 2000n, nodeWork: false, castHash, startedAt, level }] })
     await at(launch + (day + 2n) * DAY + 6n * 3600n)
     await send(mining, 'submitSignatures', [bundle.report, [key.address], [await key.signTypedData(typedReport(84532, mining.address, bundle.report))]])
     await send(mining, 'publishAllocations', [day, bundle.entries, bundle.proofs])
@@ -99,10 +105,12 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     selected = miner; rejectWallet = true; await action({ kind: 'activatePower' }, 'idle'); rejectWallet = false
     assert.equal(sent, 0)
   })
+  await startSession(0n)
   const first = await publish(0n)
   await t.test('claim receipt and balance agree; repeated claim never reports success', async () => {
     let n = await network(), d = await readApp.readV4Day(c, config, n, 0n, miner)
     assert.equal(miningPhase(d, n.timestamp), 'claimable'); assert.equal(d.amount, first.amounts[0])
+    assert.deepEqual(await readApp.claimableDays(c, config, n, miner), [0n])
     const r = await action({ kind: 'claim', day: 0n })
     assert.ok(r.pending.some(x => x?.hash)); assert.equal(r.pending.at(-1), null)
     n = await network(); d = await readApp.readV4Day(c, config, n, 0n, miner)
@@ -120,8 +128,10 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     await action({ kind: 'withdraw', amount }, 'error'); await action({ kind: 'activatePower' }, 'error')
   })
   await at(launch + 36n * DAY); await action({ kind: 'activatePower' })
+  // A February cohort to airdrop on in March; reported before the February ledger closes.
+  await startSession(40n); await publish(40n); await action({ kind: 'claim', day: 40n })
   await t.test('monthly snapshot voting and burn use matured stake without backend signatures', async () => {
-    await at(monthStart(203002n) + 10n * DAY + 100n)
+    await at(monthStart(203002n) + 16n * DAY + 100n)
     let n = await network(), d = await readApp.readV4Dao(c, config, n, 203002n, miner)
     assert.equal(d.canFinalizeMonth, true)
     await action({ kind: 'finalizeMonth', timestamp: monthStart(203002n) })
@@ -134,8 +144,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     assert.equal(d.voted, true); assert.equal(d.yes, amount)
     await action({ kind: 'vote', month: 203002n, yes: false }, 'error')
   })
-  await publish(40n); await action({ kind: 'claim', day: 40n })
-  await at(monthStart(203002n) + 22n * DAY)
+  await at(monthStart(203002n) + 26n * DAY + 200n)
   const beforeBurn = (await network()).totalSupply
   await action({ kind: 'settleVote', month: 203002n })
   assert.ok((await network()).totalSupply < beforeBurn)
@@ -149,7 +158,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     assert.equal((await readApp.readV4Stake(c, config, await network(), 1n, miner)).claimable, 0n)
   })
   await t.test('odd-month vote executes airdrop to prior-month miners, with receipt-backed UI', async () => {
-    await at(monthStart(203003n) + 10n * DAY + 100n)
+    await at(monthStart(203003n) + 16n * DAY + 100n)
     await action({ kind: 'finalizeMonth', timestamp: monthStart(203003n) }); await action({ kind: 'openVote' })
     await action({ kind: 'vote', month: 203003n, yes: true })
     let d = await readApp.readV4Dao(c, config, await network(), 203003n, miner)

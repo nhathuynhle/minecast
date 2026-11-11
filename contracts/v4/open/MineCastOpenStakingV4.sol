@@ -39,6 +39,8 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     mapping(address => Checkpoints.Trace208) private _stakes;
     mapping(address => Checkpoints.Trace208) private _votes;
     Checkpoints.Trace208 private _totalStakes;
+    Checkpoints.Trace208 private _totalVotes;
+    uint256 public totalActiveVoting;
     mapping(uint256 => Epoch) public epochs;
     mapping(uint256 => mapping(address => bool)) public claimed;
 
@@ -81,8 +83,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         totalStaked += amount;
         stakedBalance[msg.sender] += amount;
         lockedUntil[msg.sender] = uint64(block.timestamp + MINIMUM_LOCK);
-        activeVotingBalance[msg.sender] = 0;
-        _checkpoint(msg.sender);
+        _checkpoint(msg.sender, 0);
         token.safeTransferFrom(msg.sender, address(this), amount);
         emit Staked(msg.sender, amount, lockedUntil[msg.sender]);
     }
@@ -93,8 +94,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
         totalStaked -= amount;
         stakedBalance[msg.sender] -= amount;
-        if (activeVotingBalance[msg.sender] != 0) activeVotingBalance[msg.sender] = stakedBalance[msg.sender];
-        _checkpoint(msg.sender);
+        _checkpoint(msg.sender, activeVotingBalance[msg.sender] != 0 ? stakedBalance[msg.sender] : 0);
         token.safeTransfer(msg.sender, amount);
         emit Withdrawn(msg.sender, amount);
     }
@@ -102,8 +102,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     function activateGovernancePower() external {
         if (stakedBalance[msg.sender] == 0) revert InvalidAmount();
         if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
-        activeVotingBalance[msg.sender] = stakedBalance[msg.sender];
-        _checkpoint(msg.sender);
+        _checkpoint(msg.sender, stakedBalance[msg.sender]);
         emit GovernancePowerActivated(msg.sender, stakedBalance[msg.sender]);
     }
 
@@ -167,14 +166,25 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         if (timestamp >= block.timestamp || timestamp > type(uint48).max) revert InvalidPhase();
         return _totalStakes.upperLookup(uint48(timestamp));
     }
-    function votingPowerAt(address account, uint256 blockNumber) external view returns (uint256) {
+    function votingPowerAt(address account, uint256 blockNumber) public view returns (uint256) {
         if (blockNumber >= block.number || blockNumber > type(uint48).max) revert InvalidPhase();
         return _votes[account].upperLookup(uint48(blockNumber));
     }
-    function _checkpoint(address account) private {
+    /// @notice OpenZeppelin Governor reads mature voting power through these two IVotes views (block clock).
+    function getPastVotes(address account, uint256 blockNumber) external view returns (uint256) {
+        return votingPowerAt(account, blockNumber);
+    }
+    function getPastTotalSupply(uint256 blockNumber) external view returns (uint256) {
+        if (blockNumber >= block.number || blockNumber > type(uint48).max) revert InvalidPhase();
+        return _totalVotes.upperLookup(uint48(blockNumber));
+    }
+    function _checkpoint(address account, uint256 votingBalance) private {
+        totalActiveVoting = totalActiveVoting - activeVotingBalance[account] + votingBalance;
+        activeVotingBalance[account] = votingBalance;
         if (block.number > type(uint48).max || block.timestamp > type(uint48).max || totalStaked > type(uint208).max) revert InvalidPhase();
         _stakes[account].push(uint48(block.timestamp), uint208(stakedBalance[account]));
         _totalStakes.push(uint48(block.timestamp), uint208(totalStaked));
-        _votes[account].push(uint48(block.number), uint208(activeVotingBalance[account]));
+        _votes[account].push(uint48(block.number), uint208(votingBalance));
+        _totalVotes.push(uint48(block.number), uint208(totalActiveVoting));
     }
 }

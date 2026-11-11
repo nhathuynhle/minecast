@@ -1,4 +1,4 @@
-import { createWalletClient, custom, encodeFunctionData, getAddress, type Abi, type Address, type Hash, type PublicClient } from "viem"
+import { createWalletClient, custom, encodeFunctionData, getAddress, type Abi, type Address, type Hash, type Hex, type PublicClient } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { ethereumProviderForChain } from "../farcaster"
 import { tokenAbi, distributorAbi, stakingAbi, daoAbi } from "./abi"
@@ -7,8 +7,9 @@ import { verifyV4 } from "./read"
 
 export type V4Action =
   | { kind: "claim" | "activateDay"; day: bigint }
+  | { kind: "startMining"; fid: bigint; castHash: Hex; claimDays?: bigint[] }
   | { kind: "stake" | "withdraw"; amount: bigint }
-  | { kind: "activatePower" | "revokeApproval" | "openVote" }
+  | { kind: "activatePower" | "revokeApproval" | "openVote" | "buyBoost" }
   | { kind: "claimStake" | "finalizeEpoch" | "sweepEpoch"; epoch: bigint }
   | { kind: "vote"; month: bigint; yes: boolean }
   | { kind: "settleVote" | "claimAirdrop" | "releaseAirdrop"; month: bigint }
@@ -22,11 +23,15 @@ export function actionCall(config: V4Config, action: V4Action): { address: Addre
   const dao = { address: config.dao, abi: daoAbi }
   switch (action.kind) {
     case "claim": return { ...mining, functionName: "claim", args: [action.day], label: "Mining claim" }
+    case "startMining": return action.claimDays?.length
+      ? { ...mining, functionName: "startMiningAndClaim", args: [action.fid, action.castHash, action.claimDays], label: "Start 24h session and claim rewards" }
+      : { ...mining, functionName: "startMining", args: [action.fid, action.castHash], label: "Start 24h mining session" }
     case "activateDay": return { ...mining, functionName: "activateDay", args: [action.day], label: "Open claim window" }
     case "stake": case "withdraw":
       if (action.amount <= 0n) throw Error("Enter an amount greater than zero.")
       return { ...staking, functionName: action.kind, args: [action.amount], label: action.kind === "stake" ? "Stake" : "Withdraw stake" }
     case "activatePower": return { ...staking, functionName: "activateGovernancePower", args: [], label: "Activate voting power" }
+    case "buyBoost": return { address: config.token, abi: tokenAbi, functionName: "buyBoostLevel", args: [], label: "Burn for the next boost level" }
     case "revokeApproval": return { address: config.token, abi: tokenAbi, functionName: "approve", args: [config.staking, 0n], label: "Remove staking approval" }
     case "claimStake": return { ...staking, functionName: "claim", args: [action.epoch], label: "Staking reward" }
     case "finalizeEpoch": return { ...staking, functionName: "finalizeEpoch", args: [action.epoch], label: "Prepare staking rewards" }
@@ -80,8 +85,9 @@ export async function confirmV4Transaction(client: PublicClient, pending: Pendin
   }
 }
 
+/** Resolves true only after a matching successful receipt. */
 export async function executeV4Action(client: PublicClient, config: V4Config, account: Address, action: V4Action,
-  update: (state: TxProgress) => void, remember: (pending: PendingV4Tx | null) => void) {
+  update: (state: TxProgress) => void, remember: (pending: PendingV4Tx | null) => void): Promise<boolean> {
   try {
     update({ status: "checking", message: "Checking contracts and wallet…" })
     await verifyV4(client, config)
@@ -110,10 +116,11 @@ export async function executeV4Action(client: PublicClient, config: V4Config, ac
         client.readContract({ address: config.token, abi: tokenAbi, functionName: "allowance", args: [account, config.staking] }),
       ])
       if (action.amount > balance) throw Error("Stake amount exceeds your onchain balance.")
-      if (allowance < action.amount && !await send({ address: config.token, abi: tokenAbi, functionName: "approve", args: [config.staking, action.amount], label: "Exact staking approval" })) return
+      if (allowance < action.amount && !await send({ address: config.token, abi: tokenAbi, functionName: "approve", args: [config.staking, action.amount], label: "Exact staking approval" })) return false
     }
-    await send(actionCall(config, action))
+    return await send(actionCall(config, action))
   } catch (error) {
     update(isRejection(error) ? { status: "idle", message: "Wallet request cancelled." } : { status: "error", message: friendlyV4Error(error) })
+    return false
   }
 }

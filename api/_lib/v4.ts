@@ -1,8 +1,8 @@
-import { createPublicClient, fallback, http, type Address, type Chain } from "viem"
+import { createPublicClient, fallback, http, type Chain } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { parseV4Config, type V4Config } from "../../src/lib/v4/config"
-import { readV4Network, readV4Day } from "../../src/lib/v4/read"
-import { miningPhase, type V4Session } from "../../src/lib/v4/state"
+import { readV4Network } from "../../src/lib/v4/read"
+import { type V4Session } from "../../src/lib/v4/state"
 import { supabase } from "./backend"
 
 export function serverV4Config() {
@@ -32,10 +32,7 @@ export async function gateV4(config: V4Config, sessions: V4Session[]) {
   if (latest) {
     if (Date.parse(latest.ends_at) / 1000 > Number(network.timestamp)) return { eligible: false, reason: "Your 24-hour mining session is still active.", network }
     if (BigInt(latest.day) === network.day) return { eligible: false, reason: "This account already has a session in today's cohort.", network }
-    const data = await readV4Day(client, config, network, BigInt(latest.day), latest.wallet_address as Address)
-    const phase = miningPhase(data, network.timestamp, latest)
-    if (!["claimed", "expired", "excluded", "missed", "contested"].includes(phase)) return { eligible: false,
-      reason: phase === "claimable" ? "Claim your previous reward before posting another mining cast." : "Your previous reward is waiting for the daily report or review. Claim it before starting again.", network }
+    // Earlier rewards stay claimable for 7 days after activation; they never block the next 24h session.
   }
   return { eligible: true, reason: "Ready to cast.", network }
 }

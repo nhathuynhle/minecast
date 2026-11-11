@@ -18,6 +18,12 @@ test('one-percent cap explains why adding a few miners may not change an estimat
   const pool=miningPoolForDay(0n), stats=parseLiveStats(packet,config,0n)
   for(const n of [1n,2n,20n,100n]) assert.equal(estimateV4Reward(pool,{...stats,cohortMiners:n,estimatedMiners:n,totalWeight:n*10n},10),pool/100n)
 })
+test('a burn-boost level raises the estimate and the per-wallet cap by 0.2 per level',()=>{
+  const stats=parseLiveStats(packet,config,0n), pool=10000n*10n**18n
+  assert.equal(estimateV4Reward(pool,stats,10,1),60n*10n**18n)
+  assert.equal(estimateV4Reward(pool,{...stats,cohortMiners:2n,estimatedMiners:2n,totalWeight:20n},10,9),pool*14n/500n)
+  assert.equal(estimateV4Reward(pool,stats,10,10),null)
+})
 test('unknown follower weights and missing observations do not produce fabricated rewards',()=>{
   const stats=parseLiveStats(packet,config,0n)
   for(const weight of [undefined,null,0,101,1.5,NaN]) assert.equal(estimateV4Reward(10000n,stats,weight),null)
@@ -35,6 +41,7 @@ test('no-node estimates match Open V4 allocation math across mixed follower tier
   const entries=Array.from({length:320},(_,i)=>({fid:BigInt(i+1),wallet:'0x'+(i+1).toString(16).padStart(40,'0'),followers:BigInt(counts[i%10]),
     nodeWork:false,castHash:'0x'+(i+1).toString(16).padStart(40,'0'),startedAt:launch+100n}))
   const bundle=buildOpenReport({chainId:84532,distributor:config.distributor,day:0n,launchTime:launch,entries,sourceHash:'0x'+'3'.repeat(64)})
-  const stats={...parseLiveStats(packet,config,0n),cohortMiners:320n,estimatedMiners:320n,totalWeight:bundle.report.totalWeight}
+  // Reports count weight in fifths (burn-boost levels); follower-only estimates use whole base units.
+  const stats={...parseLiveStats(packet,config,0n),cohortMiners:320n,estimatedMiners:320n,totalWeight:bundle.report.totalWeight/5n}
   entries.forEach((_,i)=>assert.equal(estimateV4Reward(miningPoolForDay(0n),stats,weights[i%10]),bundle.amounts[i]))
 })

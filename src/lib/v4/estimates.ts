@@ -19,12 +19,15 @@ export function parseLiveStats(value: unknown, config: V4Config, day: bigint): V
   return result
 }
 
-/** Informational full-session estimate, never a claim amount. Active miners do NOT divide a cohort pool. */
-export function estimateV4Reward(pool: bigint, stats: V4LiveStats, minerWeight?: number | null): bigint | null {
+/** Informational full-session estimate, never a claim amount. Active miners do NOT divide a cohort pool.
+ *  Applies the caller's own burn-boost level (weight and cap ×(1 + 0.2L)); other miners' levels are unknown here. */
+export function estimateV4Reward(pool: bigint, stats: V4LiveStats, minerWeight?: number | null, level = 0): bigint | null {
   if (pool < 0n || !Number.isSafeInteger(minerWeight) || minerWeight! < 1 || minerWeight! > 100
+    || !Number.isInteger(level) || level < 0 || level > 9
     || stats.cohortMiners === 0n || stats.estimatedMiners !== stats.cohortMiners) return null
   const weight = BigInt(minerWeight!)
   if (stats.totalWeight < weight || stats.totalWeight === 0n) return null
-  const proportion = pool * weight / stats.totalWeight
-  return proportion < pool / 100n ? proportion : pool / 100n
+  const boost = BigInt(5 + level)
+  const proportion = pool * weight * boost / (stats.totalWeight * 5n), cap = pool * boost / 500n
+  return proportion < cap ? proportion : cap
 }

@@ -5,7 +5,7 @@ import { Layers, Radio, Wallet, Vote, RefreshCw, ExternalLink, Check, Loader2, A
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, ethereumProviderForChain, farcasterFetch, type FarcasterIdentity, type EthereumProvider } from "./lib/farcaster"
 import { createV4Client } from "./lib/v4/client"
 import { deploymentKey, parseV4Config, type V4Config } from "./lib/v4/config"
-import { readV4Network, readV4Day, readV4Stake, readV4Dao, type V4Network, type V4Stake, type V4Dao } from "./lib/v4/read"
+import { readV4Network, readV4Day, readV4Stake, readV4Dao, claimableDays, type V4Network, type V4Stake, type V4Dao } from "./lib/v4/read"
 import { executeV4Action, confirmV4Transaction, friendlyV4Error, isRejection, type PendingV4Tx, type TxProgress, type V4Action } from "./lib/v4/transactions"
 import { countdown, miningPhase, phaseDeadline, monthAt, monthStart, previousMonth, tokens, validMonth, DAY, type V4Session, type MiningDay, type MiningPhase } from "./lib/v4/state"
 import { estimateV4Reward } from "./lib/v4/estimates"
@@ -139,7 +139,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const live = useLiveStats(config, tab === "mine" ? dayData?.day : undefined)
   const statsFresh = live.receivedAt > 0 && clock - live.receivedAt < 45000 && !live.unavailable
   const estimate = statsFresh && live.data && dayData && !dayData.certifiedAt && !dayData.contested && ["mining", "waiting"].includes(phase ?? "")
-    ? estimateV4Reward(dayData.pool, live.data, session?.estimated_weight) : null
+    ? estimateV4Reward(dayData.pool, live.data, session?.estimated_weight, network?.boostLevel ?? 0) : null
   const deadline = dayData && phase ? phaseDeadline(dayData, phase, session) : 0n
   const fresh = updated > 0 && clock - updated < 45000 && !error
   const locked = busy || Boolean(pending) || !fresh || !account
@@ -179,22 +179,32 @@ function ConnectedV4({ config }: { config: V4Config }) {
     try {
       let identifier = recover ? castLink.trim() : ""
       if (!identifier) {
-        const gateResponse = await farcasterFetch("/api/v4/mining", { signal: AbortSignal.timeout(12000) })
-        const gate = await gateResponse.json()
-        if (gateResponse.ok && (gate.protocol !== "open-v4-quorum-1" || gate.chainId !== config.chainId || gate.distributor?.toLowerCase() !== config.distributor.toLowerCase() || gate.fid !== identity.fid)) throw Error("Session server does not match this V4 deployment or identity.")
-        if (!gateResponse.ok || !gate.eligible) throw Error(gate.error || gate.reason || "A new session is not available yet.")
+        // The intake server is an optional helper; the contract itself enforces one session per wallet per 24h.
+        const gateResponse = await farcasterFetch("/api/v4/mining", { signal: AbortSignal.timeout(12000) }).catch(() => null)
+        const gate = gateResponse?.ok ? await gateResponse.json() : null
+        if (gate && (gate.protocol !== "open-v4-quorum-1" || gate.chainId !== config.chainId || gate.distributor?.toLowerCase() !== config.distributor.toLowerCase() || gate.fid !== identity.fid)) throw Error("Session server does not match this V4 deployment or identity.")
+        if (gate && !gate.eligible) throw Error(gate.reason || "A new session is not available yet.")
         const posted = await composeOnFarcaster(castText)
         if (!posted.hash) throw Error("If your cast was posted, paste its link below to verify it. You do not need to publish again.")
         identifier = posted.hash
       }
       setCastLink(identifier); save(castKey, identifier)
-      const response = await farcasterFetch("/api/v4/mining", { method: "POST", signal: AbortSignal.timeout(25000), headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chainId: config.chainId, distributor: config.distributor, walletAddress: account,
-          ...(/^0x[0-9a-f]{40}$/i.test(identifier) ? { castHash: identifier } : { castUrl: identifier }) }) })
-      const body = await response.json()
-      if (!response.ok) throw Error(body.error || "Could not register your cast. Retry this cast.")
-      if (body.chainId !== config.chainId || body.distributor?.toLowerCase() !== config.distributor.toLowerCase() || body.session?.fid !== identity.fid) throw Error("Unexpected session response. Refresh to reconcile your session.")
-      save(castKey, null); setCastLink(""); setDayInput(String(body.session.day)); await refresh()
+      let castHash = /^0x[0-9a-f]{40}$/i.test(identifier) ? identifier.toLowerCase() : "", day = ""
+      try { // Resolves cast links and feeds live estimates; with a cast hash the session can start without it.
+        const response = await farcasterFetch("/api/v4/mining", { method: "POST", signal: AbortSignal.timeout(25000), headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chainId: config.chainId, distributor: config.distributor, walletAddress: account,
+            ...(castHash ? { castHash } : { castUrl: identifier }) }) })
+        const body = await response.json()
+        if (response.status >= 400 && response.status < 500) { castHash = ""; throw Error(body.error || "Could not verify this cast.") }
+        if (!response.ok) throw Error(body.error || "Cast verification is temporarily unavailable.")
+        if (body.chainId !== config.chainId || body.distributor?.toLowerCase() !== config.distributor.toLowerCase() || body.session?.fid !== identity.fid) throw Error("Unexpected session response. Refresh to reconcile your session.")
+        castHash = body.session.cast_hash; day = String(body.session.day)
+      } catch (e) { if (!castHash) throw e }
+      // Nodes verify and reward only the onchain session; Base sets its start time.
+      // Rewards from earlier days ride along in the same transaction, so a daily miner pays gas once a day.
+      const claimDays = network ? await claimableDays(client, config, network, account).catch(() => []) : []
+      if (!await executeV4Action(client, config, account, { kind: "startMining", fid: BigInt(identity.fid), castHash: castHash as `0x${string}`, claimDays }, updateTransaction, remember)) return
+      save(castKey, null); setCastLink(""); if (day) setDayInput(day); await refresh()
     } catch (e) { await refresh(); setSessionError(friendlyV4Error(e)) }
     finally { actionBusy.current = false; setBusy(false) }
   }
@@ -218,11 +228,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
           {session && account && session.wallet_address.toLowerCase() !== account.toLowerCase() && <p className="v4-muted">This session pays {short(session.wallet_address)}. Connect that wallet to claim its reward.</p>}
           {phase === "claimable" && dayData && <><div className="v4-reward">{tokens(dayData.amount)} <small>TOKENCAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button><p className="v4-muted">Claim by {date(dayData.claimEnd)}</p></>}
           {phase === "claimed" && dayData && <p className="v4-success">{tokens(dayData.amount)} TOKENCAST claimed onchain.</p>}
-          {phase === "activate" && dayData && <><p>Report review is complete. Opening claims starts the 24-hour claim window for this cohort.</p><Button disabled={locked} onClick={() => void transact({ kind: "activateDay", day: dayData.day })}>Open claim window</Button></>}
+          {phase === "activate" && dayData && <><p>Report review is complete. Opening claims starts the 7-day claim window for this cohort.</p><Button disabled={locked} onClick={() => void transact({ kind: "activateDay", day: dayData.day })}>Open claim window</Button></>}
           {phase === "publishing" && dayData && <p className="v4-muted">{String(dayData.published)} / {String(dayData.leafCount)} allocations published.</p>}
           {dayData && !dayData.certifiedAt && session && ["mining", "waiting"].includes(phase ?? "") && <div className="v4-estimate" aria-live="polite">
             <span className="v4-muted">Estimated session reward</span><strong>{estimate === null ? "—" : `≈ ${tokens(estimate)} TOKENCAST`}</strong>
-            <p className="v4-muted">Follower-only estimate across MineCast sessions. Node boosts and final validation may change it. Not claimable yet.</p>
+            <p className="v4-muted">Estimate from followers and your burn-boost level across MineCast sessions. Node bonuses, other miners' boosts and final validation may change it. Not claimable yet.</p>
           </div>}
           {phase === "review" && <p className="v4-muted">Allocations are under review. Claims open after the report is activated.</p>}
           <dl className="v4-stats"><Stat label={`Pool · day ${String(dayData?.day ?? network.day)}`}>{tokens(dayData?.pool ?? network.pool, 0)}</Stat><Stat label="Max per miner">{tokens((dayData?.pool ?? network.pool) / 100n, 0)}</Stat></dl>
@@ -243,8 +253,12 @@ function ConnectedV4({ config }: { config: V4Config }) {
             <Button disabled={locked || !identity || !castLink.trim()} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
           <details><summary>When can I claim?</summary><p>Each cohort starts at the contract's launch time plus whole 24-hour days, not a fixed 06:00 UTC cutoff. Your starting cohort determines your pool.</p>
             {dayData && <p>Cohort closes {date(dayData.end)}. Reports can be submitted from {date(dayData.end + DAY + dayData.workWindow)}.</p>}
-            <p>A session lasts 24 hours. Nodes then publish the daily report and complete a 48-hour review. Your claim window lasts 24 hours after the cohort is activated.</p>
+            <p>A session lasts 24 hours. Nodes then publish the daily report and complete a 48-hour review. Your claim window lasts 7 days after the cohort is activated.</p>
             <p>Estimates refresh throughout every hour as cohort participation changes. Finished sessions remain in the cohort denominator. Other apps may submit more miners, so these app counts are not a network-wide reward guarantee.</p></details>
+        </Card>
+        <Card title="Permanent boost"><p className="v4-muted">Level {network.boostLevel} · ×{(1 + network.boostLevel * 0.2).toFixed(1)} weight and daily cap for sessions you open from now on.</p>
+          {network.boostLevel < 9 && <><p>Level {network.boostLevel + 1} burns {((network.boostLevel + 1) * 1_000_000).toLocaleString("en-US")} TOKENCAST forever{network.boostLevel >= network.boostUnlocked ? `; it unlocks once ${(network.boostLevel + 1) * 10}% of mining is released` : ""}.</p>
+            <Button secondary disabled={locked || !account || network.boostLevel >= network.boostUnlocked || network.balance < BigInt(network.boostLevel + 1) * 10n ** 24n} onClick={() => void transact({ kind: "buyBoost" })}>Burn for level {network.boostLevel + 1}</Button></>}
         </Card>
       </>}
       {tab === "network" && <>

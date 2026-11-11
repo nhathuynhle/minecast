@@ -6,7 +6,9 @@ import { keccak256, toHex } from 'viem'
 import { compileOpen } from './compile-open.mjs'
 import { POLICY_HASH } from './open-report.mjs'
 
-export const DEPLOY_NAMES = ['TokenCastOpenV4', 'MineCastOpenStakingV4', 'MineCastMonthlyDaoV4', 'MineCastNodeRegistryV4', 'MineCastOpenDistributorV4']
+// Order matters: each address is predicted from the deployer nonce, so the timelock can name the later governor.
+export const DEPLOY_NAMES = ['TokenCastOpenV4', 'MineCastOpenStakingV4', 'TimelockController', 'MineCastOpenDaoV4',
+  'MineCastNodeRegistryV4', 'MineCastOpenDistributorV4', 'MineCastGovernorV4']
 export function packageOpen(output = 'research/v4/build.local') {
   const build = compileOpen(), directory = path.resolve(output)
   fs.mkdirSync(directory, { recursive: true })

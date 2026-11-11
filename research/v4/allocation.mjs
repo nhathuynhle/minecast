@@ -1,5 +1,5 @@
 // Research-only arithmetic; no Farcaster authentication or onchain verification.
-const FOLLOWER_TIERS = [
+export const FOLLOWER_TIERS = [
   [100_000, 100n],
   [50_000, 75n],
   [25_000, 50n],

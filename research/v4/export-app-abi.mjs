@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import { compileOpen } from './compile-open.mjs'
 const names = { TokenCastOpenV4: 'tokenAbi', MineCastOpenDistributorV4: 'distributorAbi',
-  MineCastOpenStakingV4: 'stakingAbi', MineCastMonthlyDaoV4: 'daoAbi', MineCastNodeRegistryV4: 'registryAbi' }
+  MineCastOpenStakingV4: 'stakingAbi', MineCastOpenDaoV4: 'daoAbi', MineCastNodeRegistryV4: 'registryAbi',
+  MineCastGovernorV4: 'governorAbi' }
 const artifacts = Object.assign({}, ...Object.values(compileOpen().contracts))
 const output = '// Generated from the Open V4 Solidity build. Regenerate with research/v4/export-app-abi.mjs.\n' +
   Object.entries(names).map(([contract, name]) => `export const ${name} = ${JSON.stringify(artifacts[contract].abi)} as const\n`).join('')

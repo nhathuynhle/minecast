@@ -3,7 +3,7 @@ import test from 'node:test'
 import { followersOf, hasVerifiedWallet, miningCasts } from './farcaster-source.mjs'
 
 const network = 'FARCASTER_NETWORK_MAINNET'
-const link = fid => ({ data: { network, fid, type: 'MESSAGE_TYPE_LINK_ADD', linkBody: { targetFid: 7, type: 'follow' } } })
+const link = fid => ({ data: { network, fid, timestamp: 0, type: 'MESSAGE_TYPE_LINK_ADD', linkBody: { targetFid: 7, type: 'follow' } } })
 
 test('follower query stays on the private API across opaque cursors', async t => {
   const cursor = 'https://other.example/?x=a&b=1'

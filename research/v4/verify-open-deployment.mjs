@@ -26,16 +26,30 @@ export async function verifyDeployment(client, plan, artifacts) {
     if (!code || code === '0x') throw Error(name + ' has no deployed code')
     same(maskImmutables(code, artifact.immutableReferences), maskImmutables(artifact.runtimeTemplate, artifact.immutableReferences), name + ' runtime')
   }
-  const tokenName = 'TokenCastOpenV4', miningName = 'MineCastOpenDistributorV4'
+  const tokenName = 'TokenCastOpenV4', miningName = 'MineCastOpenDistributorV4', timelock = plan.addresses.TimelockController
   same(await read(tokenName, 'devWallet'), plan.devWallet, 'dev wallet')
   same(await read(tokenName, 'launchTime'), plan.launchTime, 'launch time')
   same(await read(tokenName, 'bootstrapAdmin'), zeroAddress, 'bootstrap removed')
-  same(await read(tokenName, 'distributor'), plan.addresses[miningName], 'distributor binding')
-  for (const name of DEPLOY_NAMES.slice(1)) same(await read(name, 'token'), plan.addresses[tokenName], name + ' token')
+  same(await read(tokenName, 'distributorForDay', [0n]), plan.addresses[miningName], 'distributor binding')
+  same(await read(tokenName, 'governance'), timelock, 'token governance')
+  for (const name of ['MineCastOpenStakingV4', 'MineCastOpenDaoV4', 'MineCastNodeRegistryV4', miningName]) same(await read(name, 'token'), plan.addresses[tokenName], name + ' token')
   same(await read('MineCastOpenStakingV4', 'launchTime'), plan.launchTime, 'staking launch')
-  same(await read('MineCastMonthlyDaoV4', 'staking'), plan.addresses.MineCastOpenStakingV4, 'DAO staking')
-  for (const [getter, name] of [['registry', 'MineCastNodeRegistryV4'], ['staking', 'MineCastOpenStakingV4'], ['treasury', 'MineCastMonthlyDaoV4']]) {
+  same(await read('MineCastOpenDaoV4', 'staking'), plan.addresses.MineCastOpenStakingV4, 'DAO staking')
+  same(await read('MineCastOpenDaoV4', 'governance'), timelock, 'DAO governance')
+  for (const [getter, name] of [['registry', 'MineCastNodeRegistryV4'], ['staking', 'MineCastOpenStakingV4'], ['treasury', 'MineCastOpenDaoV4']]) {
     same(await read(miningName, getter), plan.addresses[name], getter)
+  }
+  const governor = 'MineCastGovernorV4'
+  same(await read(governor, 'token'), plan.addresses.MineCastOpenStakingV4, 'governor votes')
+  same(await read(governor, 'timelock'), timelock, 'governor timelock')
+  same(await read(governor, 'registry'), plan.addresses.MineCastNodeRegistryV4, 'governor registry')
+  same(await read('TimelockController', 'getMinDelay'), plan.governanceDelay, 'timelock delay')
+  same(await read(governor, 'votingDelay'), plan.votingDelay, 'voting delay')
+  same(await read(governor, 'votingPeriod'), plan.votingPeriod, 'voting period')
+  const role = name => read('TimelockController', name)
+  for (const [roleName, account, expected] of [['PROPOSER_ROLE', plan.addresses[governor], true], ['CANCELLER_ROLE', plan.addresses[governor], true],
+    ['EXECUTOR_ROLE', zeroAddress, true], ['DEFAULT_ADMIN_ROLE', plan.deployer, false], ['PROPOSER_ROLE', plan.deployer, false]]) {
+    same(await read('TimelockController', 'hasRole', [await role(roleName), account]), expected, 'timelock ' + roleName)
   }
   const launch = BigInt(plan.launchTime), day = block.timestamp < launch ? 0n : (block.timestamp - launch) / 86400n
   const bond = await read('MineCastNodeRegistryV4', 'totalWeightAt', [day])

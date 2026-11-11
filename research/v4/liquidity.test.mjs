@@ -117,7 +117,7 @@ test('V4 dev premine and optional later liquidity: real Uniswap V2 on local EVM'
   async function miningDriver() {
     const d = await deploy('TestLiquidityDistributor', [token.address])
     const driver = { ...d, abi: [...d.abi, ...token.abi.filter(x => x.type === 'error')] }
-    await send(token, 'finalizeDistributor', [driver.address]); return driver
+    await send(token, 'finalizeDistributor', [driver.address, factory.address]); return driver
   }
   let checkpoint = await c.snapshot()
   async function scenario(name, fn) {
@@ -167,7 +167,7 @@ test('V4 dev premine and optional later liquidity: real Uniswap V2 on local EVM'
   await scenario('mining can issue before any DEX pair exists; dev/admin have no direct mint power', async () => {
     const driver = await miningDriver()
     assert.equal(await read(token, 'bootstrapAdmin'), zeroAddress)
-    await denied(token, 'finalizeDistributor', [driver.address], admin, 'AlreadyFinalized')
+    await denied(token, 'finalizeDistributor', [driver.address, factory.address], admin, 'AlreadyFinalized')
     await denied(driver, 'issue', [0n, dev, 1n], admin, 'IssuanceExceeded')
     await at(miningStart + DAY)
     await send(driver, 'issue', [0n, buyer, parseEther('10000')])
@@ -349,8 +349,8 @@ test('V4 dev premine and optional later liquidity: real Uniswap V2 on local EVM'
       assert.equal(await read(token, 'releasedSupplyAfterDays', [day]), lifetimeCeilingAfterDays(day))
     }
     const badDriver = await deploy('TestLiquidityDistributor', [weth.address])
-    await denied(token, 'finalizeDistributor', [badDriver.address], admin, 'InvalidConfiguration')
-    await denied(token, 'finalizeDistributor', [badDriver.address], dev, 'Unauthorized')
+    await denied(token, 'finalizeDistributor', [badDriver.address, factory.address], admin, 'InvalidConfiguration')
+    await denied(token, 'finalizeDistributor', [badDriver.address, factory.address], dev, 'Unauthorized')
     const driver = await miningDriver()
     await at(miningStart + DAY - 1n)
     await denied(driver, 'issue', [0n, buyer, 1n], admin, 'IssuanceExceeded')

@@ -3,6 +3,8 @@
 // Deliberately exposes no arbitrary URL, generic fetch or attestation operation.
 import { isAddress } from 'viem'
 
+export const FARCASTER_EPOCH = 1609459200 // Farcaster message timestamps count seconds from here.
+
 function validFid(fid) {
   if (!Number.isSafeInteger(fid) || fid < 1) throw Error('Invalid Farcaster FID')
   return fid
@@ -41,13 +43,30 @@ export async function* miningCasts(parentUrl) {
   }
 }
 
-export async function* followersOf(fid) {
+// `before` (unix seconds) skips follows made later, so a count taken hours after the session matches.
+export async function* followersOf(fid, before = Infinity) {
   const query = { target_fid: String(validFid(fid)), link_type: 'follow' }
   for await (const message of messages('linksByTargetFid', query, 'MESSAGE_TYPE_LINK_ADD')) {
     const link = message.data.linkBody
-    if (link?.targetFid !== fid || link.type !== 'follow') throw Error('Wrong follow target')
-    yield message.data.fid
+    if (link?.targetFid !== fid || link.type !== 'follow' || !Number.isSafeInteger(message.data.timestamp)) throw Error('Wrong follow target')
+    if (FARCASTER_EPOCH + message.data.timestamp <= before) yield message.data.fid
   }
+}
+
+// null only when the node itself says the cast is absent (deleted or never existed); other failures throw.
+export async function castById(fid, hash) {
+  if (!/^0x[0-9a-f]{40}$/i.test(hash)) throw Error('Invalid cast hash')
+  const url = new URL('/v1/castById', 'http://127.0.0.1:3381')
+  url.search = new URLSearchParams({ fid: String(validFid(fid)), hash }).toString()
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15000) })
+  const message = await response.json()
+  if (!response.ok) {
+    if (message?.errCode === 'not_found') return null
+    throw Error('Snapchain castById: HTTP ' + response.status)
+  }
+  if (message.data?.network !== 'FARCASTER_NETWORK_MAINNET' || message.data.type !== 'MESSAGE_TYPE_CAST_ADD'
+    || message.data.fid !== fid || !Number.isSafeInteger(message.data.timestamp)) throw Error('Unexpected cast message')
+  return message
 }
 
 export async function hasVerifiedWallet(fid, wallet) {
