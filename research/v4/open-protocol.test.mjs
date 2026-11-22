@@ -96,10 +96,11 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     if (await now() >= start - 100n + DAY) throw Error('mineDay ' + day + ' is already over')
     if (await now() < start) await at(start)
     const entries = []
-    for (const [fid, wallet, followers = 2000n, nodeKey = zeroAddress, castHash = castOf(fid, day)] of specs) {
-      await send(mining, 'startMining', [BigInt(fid), castHash], wallet)
-      const [, , startedAt, level] = await read(mining, 'sessions', [day, wallet])
-      entries.push({ fid: BigInt(fid), wallet, followers, nodeWork: nodeKey !== zeroAddress, castHash, startedAt, nodeKey, level })
+    for (const [fid, wallet, followers = 2000n, nodeKey = zeroAddress, castHash = castOf(fid, day), inviter] of specs) {
+      if (inviter) await send(mining, 'startMiningAndClaim', [BigInt(fid), castHash, [], inviter], wallet)
+      else await send(mining, 'startMining', [BigInt(fid), castHash], wallet)
+      const [, , invites, startedAt, level] = await read(mining, 'sessions', [day, wallet])
+      entries.push({ fid: BigInt(fid), wallet, followers, nodeWork: nodeKey !== zeroAddress, castHash, startedAt, nodeKey, level, invites })
     }
     return entries
   }
@@ -186,15 +187,20 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     await assert.rejects(verifyDeployment(c, { ...plan, governanceDelay: 1n }, bundled), /timelock delay/)
   })
 
-  await scenario('boost boundary differential fuzz: 2k+node=50, base maximum=100, burn level L adds 0.2L beyond it', async () => {
+  await scenario('boost boundary differential fuzz: 2k+node=50, invites inside the x100 cap, burn up to the x200 ceiling', async () => {
     let seed = 7n
     const counts = [0n, 9n, 10n, 499n, 500n, 999n, 1000n, 1999n, 2000n, 4999n, 5000n, 9999n, 10000n, 25000n, 50000n, 100000n]
     for (let i = 0; i < 64; i++) { seed = (seed * 1664525n + 1013904223n) % 2n ** 32n; counts.push(seed % 200000n) }
-    for (const followers of counts) for (const nodeWork of [false, true]) for (const level of [0, 1, 9]) {
-      assert.equal(await read(mining, 'miningWeight', [followers, nodeWork, BigInt(level)]), weightOf({ followers, nodeWork, level }))
+    counts.push(99n, 100n)
+    for (const followers of counts) for (const nodeWork of [false, true]) for (const invites of [0, 3, 10]) for (const level of [0, 1, 9]) {
+      assert.equal(await read(mining, 'miningWeight', [followers, nodeWork, BigInt(invites), BigInt(level)]), weightOf({ followers, nodeWork, invites, level }))
     }
-    assert.equal(await read(mining, 'miningWeight', [2000n, true, 0n]), 250n) // weights are in fifths: x50
-    assert.equal(await read(mining, 'miningWeight', [100000n, true, 9n]), 1400n) // x100 base, x2.8 boost
+    assert.equal(await read(mining, 'miningWeight', [2000n, true, 0n, 0n]), 2500n) // weights are in fiftieths: x50
+    assert.equal(await read(mining, 'miningWeight', [2000n, false, 10n, 0n]), 1000n) // 10 invites: x2
+    assert.equal(await read(mining, 'miningWeight', [100000n, false, 10n, 0n]), 5000n) // invites never pass x100
+    assert.equal(await read(mining, 'miningWeight', [100000n, true, 0n, 5n]), 10000n) // burn L5 reaches x200
+    assert.equal(await read(mining, 'miningWeight', [100000n, true, 0n, 9n]), 10000n) // ...and nothing passes it
+    assert.equal(await read(mining, 'miningWeight', [10000n, false, 0n, 9n]), 4200n) // x30 base keeps the full x2.8
   })
 
   await scenario('bond admission, key uniqueness, delayed activation, escrow ownership', async () => {
@@ -219,7 +225,7 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(mining, 'sessionCount', [0n]), 1n); same(await read(mining, 'sessionWallet', [0n, 0n]), alice)
     await at(launch + DAY - 1n); await denied(mining, 'startMining', [1n, castOf(1, 1n)], alice, 'InvalidSession') // same cohort
     await at(launch + DAY); await send(mining, 'startMining', [1n, castOf(1, 1n)], alice) // the next cohort opens at 00:00 UTC
-    assert.equal((await read(mining, 'sessions', [1n, alice]))[2], launch + DAY)
+    assert.equal((await read(mining, 'sessions', [1n, alice]))[3], launch + DAY)
     const fake = { ...a, fid: 2n, wallet: carol, castHash: castOf(2, 0n) } // no onchain session behind it
     const bad = await report(0n, [a], hash('not the session list')), r = await report(0n, [a, fake])
     await reveal(r)
@@ -554,7 +560,7 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     const day0 = await mineDay(0n)
     const day1 = await mineDay(1n, [[1, alice], [2, admin, 2000n, keys[0].address]])
     const r1 = await report(1n, day1)
-    assert.equal(weightOf(r1.entries[1]), 250n)
+    assert.equal(weightOf(r1.entries[1]), 2500n)
     await certify(await report(0n, day0)) // right after day 0's close, in its own phase 1
     const day2 = await mineDay(2n, [[3, bob, 2000n, keys[0].address]]) // bob does not operate keys[0]
     const r2 = await report(2n, day2)
@@ -563,7 +569,7 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     await denied(mining, 'publishAllocations', [2n, r2.entries, r2.proofs], outsider, 'InvalidAllocation')
     await at(await now() + 2n * DAY)
     for (const day of [0n, 1n]) await send(mining, 'activateDay', [day], outsider)
-    assert.equal((await read(mining, 'dayInfo', [1n])).observedWeight, 300n)
+    assert.equal((await read(mining, 'dayInfo', [1n])).observedWeight, 3000n)
     await denied(mining, 'claimMany', [[0n, 1n]], bob, 'InvalidPhase')
     const before = await read(token, 'balanceOf', [alice])
     await send(mining, 'claimMany', [[0n, 1n]], alice)
@@ -575,11 +581,35 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   await scenario('one transaction opens the next session and claims every open earlier day', async () => {
     const r = await report(); await activate(r) // day 0 claims open about 1.5 hours into day 1
     const before = await read(token, 'balanceOf', [alice])
-    await send(mining, 'startMiningAndClaim', [1n, castOf(1, 1n), [0n, 3n]], alice) // day 3 holds nothing yet: skipped
+    await send(mining, 'startMiningAndClaim', [1n, castOf(1, 1n), [0n, 3n], zeroAddress], alice) // day 3 holds nothing yet: skipped
     assert.equal(await read(token, 'balanceOf', [alice]), before + r.amounts[0])
     assert.equal((await read(mining, 'sessions', [1n, alice]))[0], 1n)
     await denied(mining, 'claimMany', [[0n]], alice, 'InvalidPhase')
-    await denied(mining, 'startMiningAndClaim', [2n, castOf(2, 1n), Array(101).fill(0n)], bob, 'InvalidPhase')
+    await denied(mining, 'startMiningAndClaim', [2n, castOf(2, 1n), Array(101).fill(0n), zeroAddress], bob, 'InvalidPhase')
+  })
+
+  await scenario('invites: +0.1 weight per invitee FID with 100+ followers, set once, counted once, fixed at session start', async () => {
+    // alice (2000 followers) and carol (99: tier floor 10) name bob; bob naming himself is ignored
+    const day0 = await mineDay(0n, [[1, alice, 2000n, zeroAddress, undefined, bob], [3, carol, 10n, zeroAddress, undefined, bob], [2, bob, 2000n, zeroAddress, undefined, bob]])
+    assert.equal(getAddress(await read(mining, 'inviterOf', [alice])), getAddress(bob))
+    assert.equal(await read(mining, 'inviterOf', [bob]), zeroAddress)
+    assert.deepEqual(day0.map(e => e.invites), [0, 0, 0])
+    await activate(await report(0n, day0))
+    assert.equal(await read(mining, 'inviteCount', [bob]), 1n) // carol is under 100 followers
+    assert.equal(await read(mining, 'inviteCounted', [1n]), true)
+    // fid 1 again from another wallet that names bob: the FID already counted
+    const day1 = await mineDay(1n, [[1, outsider, 2000n, zeroAddress, undefined, bob], [2, bob, 2000n, zeroAddress, undefined, carol]])
+    assert.deepEqual(day1.map(e => e.invites), [0, 1])
+    const r1 = await report(1n, day1)
+    assert.equal(weightOf(r1.entries[1]), 550n) // tier 10 x 1.1, in fiftieths
+    await activate(r1)
+    assert.equal(await read(mining, 'inviteCount', [bob]), 1n)
+    assert.equal(getAddress(await read(mining, 'inviterOf', [bob])), getAddress(carol)) // bob may still name his own inviter
+    // A quorum cannot grant invites the session did not carry.
+    const [own] = await mineDay(2n, [[2, bob]])
+    const forged = await report(2n, [{ ...own, invites: 2 }])
+    await reveal(forged); await submit(forged)
+    await denied(mining, 'publishAllocations', [2n, forged.entries, forged.proofs], outsider, 'InvalidAllocation')
   })
 
   await scenario('burn-boost levels: unlocked by the release calendar, permanent per wallet, x1.2 weight and cap per level', async () => {

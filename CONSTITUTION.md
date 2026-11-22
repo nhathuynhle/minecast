@@ -8,7 +8,8 @@ These are fixed in `TokenCastOpenV4` and can never be changed by anyone, includi
 
 - Maximum supply: 21,000,000,000 TOKENCAST. Developer premine: 2,100,000.
 - Mining emission: 0.5% of the remaining mining budget per day, with lifetime and per-day caps.
-- Burn boost: levels 1–9. Level L costs L × 1,000,000 TOKENCAST (burned) and unlocks once L × 10% of the mining budget has been released. Each level adds +0.2 to weight and to the per-wallet daily cap.
+- Burn boost: levels 1–9. Each level costs 1,000,000 TOKENCAST (burned) and unlocks once L × 10% of the mining budget has been released. Each level adds +0.2 to weight and to the per-wallet daily cap. Burn is the only boost that goes past the ×100 base cap, up to a hard ×200 ceiling.
+- Invite boost: a wallet may name its inviter once, when it opens a session itself. An invite counts once per invitee Farcaster account, at its first rewarded day with at least 100 followers. Each counted invite adds +0.1 to the inviter's weight for sessions opened afterwards, up to 10 invites (×2), inside the ×100 base cap.
 - Balances. No contract can move tokens out of a wallet or out of a staker's principal.
 - There is no pause, no blacklist and no admin key. The deployment key loses all powers when `finalizeDistributor` runs.
 

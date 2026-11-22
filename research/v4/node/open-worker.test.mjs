@@ -34,7 +34,7 @@ const client = { async readContract({ functionName, args }) {
     case 'distributorForDay': return distributor
     case 'sessionCount': return BigInt(days[args[0]].length)
     case 'sessionWallet': return days[args[0]][Number(args[1])].wallet
-    case 'sessions': { const s = days[args[0]].find(x => x.wallet === args[1]); return [s.fid, s.castHash, s.startedAt, s.fid === 5n ? 3 : 0] }
+    case 'sessions': { const s = days[args[0]].find(x => x.wallet === args[1]); return [s.fid, s.castHash, s.fid === 5n ? 2 : 0, s.startedAt, s.fid === 5n ? 3 : 0] }
     case 'sessionsHash': return '0x' + '5'.repeat(64)
     case 'dayInfo': return { digest: prevDigest }
     case 'certificate': return [1n, cutoff - 100n]
@@ -66,8 +66,8 @@ function snapchain(url) {
 test('collect keeps only onchain sessions the operator Snapchain proves, with the onchain node-work rule', async t => {
   t.mock.method(globalThis, 'fetch', async url => snapchain(new URL(url)))
   const input = await collect({ client, distributor, day: 1n, launchTime: launch })
-  assert.deepEqual(input.entries.map(e => [Number(e.fid), e.wallet, e.followers, e.nodeWork, e.nodeKey, e.level]), [
-    [1, wallet(1), 0, true, nodeKey, 0], [4, wallet(4), 0, false, zeroAddress, 0], [5, wallet(5), 10, false, zeroAddress, 3], [8, wallet(80), 0, false, zeroAddress, 0]])
+  assert.deepEqual(input.entries.map(e => [Number(e.fid), e.wallet, e.followers, e.nodeWork, e.nodeKey, e.level, e.invites]), [
+    [1, wallet(1), 0, true, nodeKey, 0, 0], [4, wallet(4), 0, false, zeroAddress, 0, 0], [5, wallet(5), 10, false, zeroAddress, 3, 2], [8, wallet(80), 0, false, zeroAddress, 0, 0]])
   assert.equal(input.sourceHash, '0x' + '5'.repeat(64))
   ownCommit = false // signed yesterday's report but only copied it: no node bonus
   assert.equal((await collect({ client, distributor, day: 1n, launchTime: launch })).entries[0].nodeWork, false)
@@ -92,15 +92,17 @@ test('collect keeps only onchain sessions the operator Snapchain proves, with th
 
 test('a node co-signs the earliest announcement within one follower tier, never anything further off', () => {
   const e = (n, followers, extra = {}) => ({ fid: BigInt(n), wallet: wallet(n), followers, nodeWork: false, castHash: cast(n),
-    startedAt: at, nodeKey: zeroAddress, level: 0, ...extra })
+    startedAt: at, nodeKey: zeroAddress, level: 0, invites: 0, ...extra })
   const mine = [e(1, 500), e(2, 0)]
   assert.equal(withinTolerance(mine, [e(2, 0), e(1, 1000)]), true) // one tier up, any order
   assert.equal(withinTolerance(mine, [e(1, 2000), e(2, 0)]), false) // two tiers
   assert.equal(withinTolerance(mine, [e(1, 600), e(2, 0)]), false) // not a tier floor
   assert.equal(withinTolerance(mine, [e(1, 500)]), false) // a miner missing
   assert.equal(withinTolerance(mine, [e(1, 500, { level: 1 }), e(2, 0)]), false) // anything onchain must match exactly
+  assert.equal(withinTolerance(mine, [e(1, 500, { invites: 1 }), e(2, 0)]), false)
   const input = { day: 1n, launchTime: launch, entries: mine, sourceHash: '0x' + '5'.repeat(64) }
   const picked = pickAnnouncement(input, [[e(1, 5000), e(2, 0)], [e(1, 1000), e(2, 10)], [e(1, 500), e(2, 0)]], 31337, distributor)
   assert.deepEqual(picked.map(x => x.followers), [1000, 10])
+  assert.equal(withinTolerance([e(1, 10)], [e(1, 500)]), false) // the 100 floor sits between 10 and 500
   assert.equal(pickAnnouncement(input, [[e(1, 5000), e(2, 0)]], 31337, distributor), null)
 })

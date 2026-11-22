@@ -28,7 +28,7 @@ const FOLLOW_MIN_AGE = 7n * DAY, ACCOUNT_MIN_AGE = 30n * DAY
 const weekStart = t => t - ((t / DAY + 3n) % 7n) * DAY // 1970-01-01 was a Thursday
 const abi = parseAbi([
   'struct Report { uint256 day; bytes32 root; uint256 totalWeight; uint256 allocated; uint256 leafCount; bytes32 sourceHash; }',
-  'struct Entry { uint64 fid; address wallet; uint64 followers; bool nodeWork; bytes20 castHash; uint64 startedAt; address nodeKey; uint8 level; }',
+  'struct Entry { uint64 fid; address wallet; uint64 followers; bool nodeWork; bytes20 castHash; uint64 startedAt; address nodeKey; uint8 level; uint8 invites; }',
   'struct Day { bytes32 digest; Report report; uint256 published; uint256 observedWeight; uint256 observedAllocation; uint256 claimed; uint64 claimEnd; bool contested; }',
   'function token() view returns (address)',
   'function registry() view returns (address)',
@@ -43,7 +43,7 @@ const abi = parseAbi([
   'function signedAt(bytes32 digest, address signer) view returns (uint256)',
   'function sessionCount(uint256 day) view returns (uint256)',
   'function sessionWallet(uint256 day, uint256 index) view returns (address)',
-  'function sessions(uint256 day, address wallet) view returns (uint64 fid, bytes20 castHash, uint64 startedAt, uint8 level)',
+  'function sessions(uint256 day, address wallet) view returns (uint64 fid, bytes20 castHash, uint8 invites, uint64 startedAt, uint8 level)',
   'function sessionsHash(uint256 day) view returns (bytes32)',
   'function distributorForDay(uint256 day) view returns (address)',
   'function keysOf(address operator) view returns (address[])',
@@ -73,8 +73,8 @@ async function sessionsOf(client, address, day) {
   // Sessions are cheap to spam on an L2: read in bounded batches so a flood cannot exhaust the RPC.
   for (let i = 0; i < count; i += 50) sessions.push(...await Promise.all(Array.from({ length: Math.min(50, count - i) }, async (_, j) => {
     const wallet = await read('sessionWallet', [day, BigInt(i + j)])
-    const [fid, castHash, startedAt, level] = await read('sessions', [day, wallet])
-    return { fid, wallet, castHash, startedAt, level }
+    const [fid, castHash, invites, startedAt, level] = await read('sessions', [day, wallet])
+    return { fid, wallet, castHash, startedAt, level, invites }
   })))
   return sessions
 }
@@ -213,7 +213,7 @@ export function withinTolerance(mine, theirs) {
     const t = byWallet.get(getAddress(m.wallet))
     return !!t && tierIndex(t.followers) >= 0 && Math.abs(tierIndex(t.followers) - tierIndex(m.followers)) <= 1
       && BigInt(t.fid) === BigInt(m.fid) && t.castHash.toLowerCase() === m.castHash.toLowerCase()
-      && BigInt(t.startedAt) === BigInt(m.startedAt) && Number(t.level) === Number(m.level)
+      && BigInt(t.startedAt) === BigInt(m.startedAt) && Number(t.level) === Number(m.level) && Number(t.invites) === Number(m.invites)
       && t.nodeWork === m.nodeWork && getAddress(t.nodeKey) === getAddress(m.nodeKey)
   })
 }

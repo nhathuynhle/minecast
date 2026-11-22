@@ -25,7 +25,7 @@ contract TokenCastOpenV4 is ERC20, ERC20Burnable {
     uint256 private constant RETENTION = PRECISION * 995 / 1000;
     /// @notice Permanent mining boost: level L multiplies weight and the per-wallet daily cap by 1 + 0.2L.
     uint256 public constant MAX_BOOST_LEVEL = 9;
-    uint256 public constant BOOST_PRICE = 1_000_000 ether; // level L burns L × BOOST_PRICE
+    uint256 public constant BOOST_PRICE = 1_000_000 ether; // every level burns the same amount
 
     address public immutable devWallet;
     uint64 public immutable launchTime;
@@ -113,15 +113,15 @@ contract TokenCastOpenV4 is ERC20, ERC20Burnable {
         emit Issued(day, recipient, amount, newTotal);
     }
 
-    /// @notice Burn L million TOKENCAST to raise the caller's permanent boost to level L, one level at a time.
+    /// @notice Burn 1 million TOKENCAST to raise the caller's permanent boost by one level.
     ///         Level L opens once the fixed calendar has released L × 10% of the mining budget.
     ///         Lives in the token so every present and future distributor reads the same level.
     function buyBoostLevel() external {
         uint256 level = uint256(boostLevel[msg.sender]) + 1;
         if (level > boostUnlockedLevel()) revert BoostLocked();
         boostLevel[msg.sender] = uint8(level);
-        _burn(msg.sender, level * BOOST_PRICE);
-        emit BoostBought(msg.sender, level, level * BOOST_PRICE);
+        _burn(msg.sender, BOOST_PRICE);
+        emit BoostBought(msg.sender, level, BOOST_PRICE);
     }
 
     /// @notice Highest level anyone may buy now: tenths of the mining budget released by the calendar.

@@ -1,4 +1,4 @@
-import { createWalletClient, custom, encodeFunctionData, getAddress, type Abi, type Address, type Hash, type Hex, type PublicClient } from "viem"
+import { createWalletClient, custom, encodeFunctionData, getAddress, zeroAddress, type Abi, type Address, type Hash, type Hex, type PublicClient } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { ethereumProviderForChain } from "../farcaster"
 import { tokenAbi, distributorAbi, stakingAbi, daoAbi, governorAbi } from "./abi"
@@ -7,7 +7,7 @@ import { verifyV4 } from "./read"
 
 export type V4Action =
   | { kind: "claim" | "activateDay"; day: bigint }
-  | { kind: "startMining"; fid: bigint; castHash: Hex; claimDays?: bigint[] }
+  | { kind: "startMining"; fid: bigint; castHash: Hex; claimDays?: bigint[]; inviter?: Address }
   | { kind: "claimMany"; days: bigint[] }
   | { kind: "stake" | "withdraw"; amount: bigint }
   | { kind: "activatePower" | "revokeApproval" | "openVote" | "buyBoost" }
@@ -31,8 +31,9 @@ export function actionCall(config: V4Config, action: V4Action): { address: Addre
   const dao = { address: config.dao, abi: daoAbi }
   switch (action.kind) {
     case "claim": return { ...mining, functionName: "claim", args: [action.day], label: "Mining claim" }
-    case "startMining": return action.claimDays?.length
-      ? { ...mining, functionName: "startMiningAndClaim", args: [action.fid, action.castHash, action.claimDays], label: "Start today's session and claim rewards" }
+    case "startMining": return action.claimDays?.length || action.inviter
+      ? { ...mining, functionName: "startMiningAndClaim", args: [action.fid, action.castHash, action.claimDays ?? [], action.inviter ?? zeroAddress],
+        label: action.claimDays?.length ? "Start today's session and claim rewards" : "Start today's mining session" }
       : { ...mining, functionName: "startMining", args: [action.fid, action.castHash], label: "Start today's mining session" }
     case "claimMany": return { ...mining, functionName: "claimMany", args: [action.days], label: "Claim earlier mining rewards" }
     case "activateDay": return { ...mining, functionName: "activateDay", args: [action.day], label: "Open claim window" }

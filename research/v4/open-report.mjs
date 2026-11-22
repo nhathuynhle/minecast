@@ -3,7 +3,7 @@ import { encodeAbiParameters, hashTypedData, keccak256, concatHex, toHex, zeroHa
 import { followerWeight } from './allocation.mjs'
 import { miningPoolForDay } from './node/bootstrap-model.mjs'
 
-export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.7:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M*L-cap*(1+0.2L):followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h'))
+export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.8:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h'))
 export const types = { DailyReport: [
   { name: 'day', type: 'uint256' }, { name: 'root', type: 'bytes32' },
   { name: 'totalWeight', type: 'uint256' }, { name: 'allocated', type: 'uint256' },
@@ -14,15 +14,16 @@ export function typedReport(chainId, distributor, report) {
     types, primaryType: 'DailyReport', message: { ...report, policyHash: POLICY_HASH } }
 }
 export function openDigest(chainId, distributor, report) { return hashTypedData(typedReport(chainId, distributor, report)) }
-// Weights are in fifths: base (follower tier × node 5, capped at 100) × (5 + burn-boost level).
+// Weights are in fiftieths: min(min(tier × node 5 × (1 + 0.1 × invites), 100) × (1 + 0.2 × level), 200) × 50.
 export function weightOf(entry) {
-  const weight = followerWeight(Number(entry.followers)) * (entry.nodeWork ? 5n : 1n)
-  return (weight > 100n ? 100n : weight) * (5n + BigInt(entry.level ?? 0))
+  const base = followerWeight(Number(entry.followers)) * (entry.nodeWork ? 5n : 1n) * (10n + BigInt(Math.min(entry.invites ?? 0, 10)))
+  const boosted = (base > 1000n ? 1000n : base) * (5n + BigInt(entry.level ?? 0))
+  return boosted > 10000n ? 10000n : boosted
 }
 const components = [ { name: 'fid', type: 'uint64' }, { name: 'wallet', type: 'address' },
   { name: 'followers', type: 'uint64' }, { name: 'nodeWork', type: 'bool' },
   { name: 'castHash', type: 'bytes20' }, { name: 'startedAt', type: 'uint64' }, { name: 'nodeKey', type: 'address' },
-  { name: 'level', type: 'uint8' } ]
+  { name: 'level', type: 'uint8' }, { name: 'invites', type: 'uint8' } ]
 export function openLeaf(chainId, distributor, day, index, entry, amount) {
   return keccak256(keccak256(encodeAbiParameters([
     { type: 'uint256' }, { type: 'address' }, { type: 'uint256' }, { type: 'uint256' },
@@ -48,12 +49,14 @@ export function buildOpenReport({ chainId, distributor, day, launchTime, entries
   const fids = new Set(), wallets = new Set(), casts = new Set()
   const canonical = entries.map(entry => {
     const e = { ...entry, wallet: getAddress(entry.wallet), fid: integer(entry.fid), followers: integer(entry.followers),
-      startedAt: integer(entry.startedAt), nodeKey: getAddress(entry.nodeKey ?? zeroAddress), level: Number(entry.level ?? 0) }
+      startedAt: integer(entry.startedAt), nodeKey: getAddress(entry.nodeKey ?? zeroAddress), level: Number(entry.level ?? 0),
+      invites: Number(entry.invites ?? 0) }
     const start = launchTime + day * 86400n
     if (e.fid <= 0n || e.fid >= 2n ** 64n || e.followers < 0n || e.followers > BigInt(Number.MAX_SAFE_INTEGER)
       || typeof e.nodeWork !== 'boolean' || e.startedAt >= 2n ** 64n || e.startedAt < start || e.startedAt >= start + 86400n
       || /^0x0{40}$/i.test(e.wallet) || !/^0x[0-9a-f]{40}$/i.test(e.castHash) || /^0x0{40}$/i.test(e.castHash)
-      || e.nodeWork !== (e.nodeKey !== zeroAddress) || !Number.isInteger(e.level) || e.level < 0 || e.level > 9) throw Error('Invalid entry')
+      || e.nodeWork !== (e.nodeKey !== zeroAddress) || !Number.isInteger(e.level) || e.level < 0 || e.level > 9
+      || !Number.isInteger(e.invites) || e.invites < 0 || e.invites > 10) throw Error('Invalid entry')
     const fid = String(e.fid), wallet = e.wallet.toLowerCase(), cast = e.castHash.toLowerCase()
     if (fids.has(fid) || wallets.has(wallet) || casts.has(cast)) throw Error('Duplicate FID, wallet or cast')
     fids.add(fid); wallets.add(wallet); casts.add(cast)

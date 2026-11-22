@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
-import { encodeFunctionData, getAddress, isAddress, parseUnits, type Address } from "viem"
+import { encodeFunctionData, getAddress, isAddress, parseUnits, zeroAddress, type Address } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { Layers, Radio, Wallet, Vote, RefreshCw, ExternalLink, Check, Loader2, ArrowDownToLine, Send } from "lucide-react"
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, ethereumProviderForChain, farcasterFetch, type FarcasterIdentity, type EthereumProvider } from "./lib/farcaster"
@@ -67,6 +67,13 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const [monthInput, setMonthInput] = useState("")
   const [stakeAmount, setStakeAmount] = useState("")
   const [castLink, setCastLink] = useState("")
+  // ?ref=<wallet> from an invite cast; kept until the first session records it onchain.
+  const [invitedBy] = useState<Address | null>(() => {
+    const ref = new URLSearchParams(window.location.search).get("ref")
+    if (ref && isAddress(ref)) save(`${scope}:ref`, getAddress(ref))
+    return load<Address>(`${scope}:ref`)
+  })
+  const [inviteNote, setInviteNote] = useState("")
   const [castText, setCastText] = useState("Mining with the Farcaster community on MineCast. Join today's session!")
   const [error, setError] = useState("")
   const [sessionError, setSessionError] = useState("")
@@ -153,7 +160,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const live = useLiveStats(config, tab === "mine" ? dayData?.day : undefined)
   const statsFresh = live.receivedAt > 0 && clock - live.receivedAt < 45000 && !live.unavailable
   const estimate = statsFresh && live.data && dayData && !dayData.certifiedAt && !dayData.contested && ["mining", "waiting"].includes(phase ?? "")
-    ? estimateV4Reward(dayData.pool, live.data, session?.estimated_weight, network?.boostLevel ?? 0) : null
+    ? estimateV4Reward(dayData.pool, live.data, session?.estimated_weight, network?.boostLevel ?? 0, network?.invites ?? 0) : null
   const deadline = dayData && phase ? phaseDeadline(dayData, phase, session) : 0n
   const fresh = updated > 0 && clock - updated < 45000 && !error
   const locked = busy || Boolean(pending) || !fresh || !account
@@ -199,6 +206,15 @@ function ConnectedV4({ config }: { config: V4Config }) {
       await transact({ kind, amount })
     } catch (e) { setTx({ status: "error", message: friendlyV4Error(e) }) }
   }
+  async function shareInvite() {
+    if (!account) return
+    const link = `${window.location.origin}/?ref=${account}`
+    const shared = await composeOnFarcaster("Mining $TOKENCAST on MineCast. Start from this cast and your first session counts as my invite.", link)
+    if (shared.status === "posted") return setInviteNote("Invite posted")
+    if (shared.status !== "unavailable") return
+    try { await navigator.clipboard.writeText(link); setInviteNote("Invite link copied") } catch { setInviteNote(link) }
+  }
+
   async function postCast(recover: boolean) {
     if (!identity || !account || actionBusy.current || locked) return
     actionBusy.current = true; setBusy(true); setSessionError("")
@@ -229,7 +245,9 @@ function ConnectedV4({ config }: { config: V4Config }) {
       // Nodes verify and reward only the onchain session; Base sets its start time.
       // Rewards from earlier days ride along in the same transaction, so a daily miner pays gas once a day.
       const claimDays = network ? await claimableDays(client, config, network, account).catch(() => []) : []
-      if (!await executeV4Action(client, config, account, { kind: "startMining", fid: BigInt(identity.fid), castHash: castHash as `0x${string}`, claimDays }, updateTransaction, remember)) return
+      // An invite link is recorded once, at the invitee's own session; the contract ignores it after that.
+      const inviter = invitedBy && network?.inviter === zeroAddress && invitedBy.toLowerCase() !== account.toLowerCase() ? invitedBy : undefined
+      if (!await executeV4Action(client, config, account, { kind: "startMining", fid: BigInt(identity.fid), castHash: castHash as `0x${string}`, claimDays, inviter }, updateTransaction, remember)) return
       save(castKey, null); setCastLink(""); if (day) setDayInput(day); await refresh()
     } catch (e) { await refresh(); setSessionError(friendlyV4Error(e)) }
     finally { actionBusy.current = false; setBusy(false) }
@@ -285,15 +303,20 @@ function ConnectedV4({ config }: { config: V4Config }) {
             <p>After a {String(dayData ? dayData.reviewPeriod / 60n : 60n)}-minute public review the claim window opens for 7 days, usually within two hours of the close. Claiming never blocks your next session.</p>
             <p>Estimates refresh throughout every hour as cohort participation changes. Finished sessions remain in the cohort denominator. Other apps may submit more miners, so these app counts are not a network-wide reward guarantee.</p></details>
         </Card>
-        <Card title="Permanent boost"><p className="v4-muted">Level {network.boostLevel} · ×{(1 + network.boostLevel * 0.2).toFixed(1)} weight and daily cap for sessions you open from now on, applied on top of the ×100 base cap.</p>
-          {network.boostLevel < 9 && <><p>Level {network.boostLevel + 1} burns {((network.boostLevel + 1) * 1_000_000).toLocaleString("en-US")} TOKENCAST forever{network.boostLevel >= network.boostUnlocked ? `; it unlocks once ${(network.boostLevel + 1) * 10}% of mining is released` : ""}.</p>
-            <Button secondary disabled={locked || !account || network.boostLevel >= network.boostUnlocked || network.balance < BigInt(network.boostLevel + 1) * 10n ** 24n} onClick={() => void transact({ kind: "buyBoost" })}>Burn for level {network.boostLevel + 1}</Button></>}
+        <Card title="Invite friends"><p className="v4-muted">{network.invites}/10 invites · ×{(1 + network.invites * 0.1).toFixed(1)} weight for sessions you open from now on, inside the ×100 base cap.</p>
+          <p>Each friend adds +10% once their first rewarded day shows 100+ followers. A Farcaster account counts once.</p>
+          {network.inviter !== zeroAddress && <p className="v4-muted">Invited by {short(network.inviter)}.</p>}
+          <Button secondary disabled={!account} onClick={() => void shareInvite()}><Send size={17} />{inviteNote || "Share invite link"}</Button>
+        </Card>
+        <Card title="Permanent boost"><p className="v4-muted">Level {network.boostLevel} · ×{(1 + network.boostLevel * 0.2).toFixed(1)} weight and daily cap for sessions you open from now on, applied on top of the ×100 base cap, up to ×200 in total.</p>
+          {network.boostLevel < 9 && <><p>Level {network.boostLevel + 1} burns 1,000,000 TOKENCAST forever{network.boostLevel >= network.boostUnlocked ? `; it unlocks once ${(network.boostLevel + 1) * 10}% of mining is released` : ""}.</p>
+            <Button secondary disabled={locked || !account || network.boostLevel >= network.boostUnlocked || network.balance < 10n ** 24n} onClick={() => void transact({ kind: "buyBoost" })}>Burn for level {network.boostLevel + 1}</Button></>}
         </Card>
       </>}
       {tab === "network" && <>
         <Card title="Open network"><dl className="v4-stats"><Stat label="Active validator bond">{tokens(network.totalBond, 0)}</Stat><Stat label="Minimum network bond">1,000,000</Stat><Stat label="Certificate threshold">More than ⅔</Stat><Stat label="Current day">{String(network.day)}</Stat></dl>
           <p>Mining reports use signatures weighted by bonded TOKENCAST. A single operator can bootstrap the network; offline stake still counts toward the threshold.</p></Card>
-        <Card title="Reward policy"><dl className="v4-stats"><Stat label="Daily pool decline">0.5%</Stat><Stat label="Per-miner cap">1% of daily pool · up to 2.8% with burn boost</Stat><Stat label="Node multiplier">×5 · combined cap ×100</Stat><Stat label="Burn boost">×1.2–×2.8 on top of the ×100 cap</Stat><Stat label="Unallocated surplus">5% staking · 95% DAO</Stat></dl>
+        <Card title="Reward policy"><dl className="v4-stats"><Stat label="Daily pool decline">0.5%</Stat><Stat label="Per-miner cap">1% of daily pool · up to 2.8% with burn boost</Stat><Stat label="Node multiplier">×5 · combined cap ×100</Stat><Stat label="Invites">+10% each · up to ×2 inside the ×100 cap</Stat><Stat label="Burn boost">×1.2–×2.8 on top of the ×100 cap · ×200 ceiling</Stat><Stat label="Unallocated surplus">5% staking · 95% DAO</Stat></dl>
           <p className="v4-muted">Follower and node-work inputs are certified by the node quorum. Follower tiers refresh every Monday 00:00 UTC. The allocation formula is enforced onchain.</p></Card>
       </>}
       {tab === "token" && <>

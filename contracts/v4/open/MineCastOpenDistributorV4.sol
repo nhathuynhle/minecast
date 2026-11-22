@@ -28,7 +28,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     uint256 public constant CLAIM_WINDOW = 7 days;
     uint256 public constant MAX_MINER_BPS = 100; // base per-wallet daily cap; boost level L raises it by 1 + 0.2L
     uint256 public constant MAX_BATCH = 100;
-    bytes32 public constant POLICY_HASH = keccak256("MineCast.OpenV4.Quorum.7:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M*L-cap*(1+0.2L):followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h");
+    bytes32 public constant POLICY_HASH = keccak256("MineCast.OpenV4.Quorum.8:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h");
     bytes32 public constant REPORT_TYPEHASH = keccak256("DailyReport(uint256 day,bytes32 root,uint256 totalWeight,uint256 allocated,uint256 leafCount,bytes32 sourceHash,bytes32 policyHash)");
 
     struct Report {
@@ -48,10 +48,11 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         uint64 startedAt;
         address nodeKey;
         uint8 level;
+        uint8 invites;
     }
-    /// @dev Two slots: fid + castHash, then startedAt + level + the published allocation, so publishing a row
+    /// @dev Two slots: fid + castHash + invites, then startedAt + level + the published allocation, so publishing a row
     ///      updates a slot the miner already paid for instead of creating a new one.
-    struct Session { uint64 fid; bytes20 castHash; uint64 startedAt; uint8 level; uint176 amount; bool claimed; }
+    struct Session { uint64 fid; bytes20 castHash; uint8 invites; uint64 startedAt; uint8 level; uint176 amount; bool claimed; }
     struct Certificate {
         uint256 signedWeight;
         uint256 committedWeight; // signers whose own phase-1 commitment is exactly this report
@@ -84,6 +85,11 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     mapping(uint256 day => mapping(address wallet => Session)) public sessions;
     mapping(uint256 day => address[]) private _sessionWallets;
     mapping(uint256 day => bytes32) public sessionsHash;
+    /// @notice Who invited a wallet; set once, at a session the wallet opens itself.
+    mapping(address wallet => address) public inviterOf;
+    /// @notice Invites that count: each invitee FID counts once, at its first paid day with at least 100 followers.
+    mapping(address inviter => uint256) public inviteCount;
+    mapping(uint64 fid => bool) public inviteCounted;
     struct Announcement { address signer; uint64 blockNumber; }
     mapping(uint256 day => Announcement[]) private _announcements;
     mapping(uint256 day => mapping(address signer => bool)) public announced;
@@ -108,6 +114,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     event EquivocationProven(uint256 indexed day, address indexed signer, bytes32 first, bytes32 second);
     event CertificateInvalidated(uint256 indexed day, bytes32 indexed digest, uint256 remainingWeight);
     event MonthFinalized(uint256 indexed month, uint256 totalMined);
+    event InviteCounted(address indexed inviter, uint64 indexed fid, address indexed wallet);
     event ReportAnnounced(uint256 indexed day, address indexed signer, Entry[] entries);
 
     constructor(TokenCastOpenV4 token_, MineCastNodeRegistryV4 registry_, IMineCastStakingV4 staking_, MineCastOpenDaoV4 treasury_)
@@ -127,10 +134,12 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     ///      the quorum keeps at most one verified session per FID and publication rejects reused casts.
     function startMining(uint64 fid, bytes20 castHash) external { _startMining(fid, castHash); }
 
-    /// @notice Open today's session and claim the caller's open earlier days in one transaction.
-    ///         Days that are not (or no longer) claimable are skipped, so a closing window never blocks the session.
-    function startMiningAndClaim(uint64 fid, bytes20 castHash, uint256[] calldata days_) external nonReentrant {
+    /// @notice Open today's session, record who invited the caller (first time only; zero for none) and claim
+    ///         the caller's open earlier days in one transaction. Days that are not (or no longer) claimable are
+    ///         skipped, so a closing window never blocks the session.
+    function startMiningAndClaim(uint64 fid, bytes20 castHash, uint256[] calldata days_, address inviter) external nonReentrant {
         if (days_.length > MAX_BATCH) revert InvalidPhase();
+        if (inviter != address(0) && inviter != msg.sender && inviterOf[msg.sender] == address(0)) inviterOf[msg.sender] = inviter;
         _startMining(fid, castHash);
         for (uint256 i; i < days_.length; ++i) _claim(days_[i], false);
     }
@@ -141,8 +150,9 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         uint256 day = (block.timestamp - launch) / 1 days;
         if (token.distributorForDay(day) != address(this)) revert InvalidPhase();
         if (sessions[day][msg.sender].startedAt != 0) revert InvalidSession();
-        // The burn-boost level is fixed when the session opens; buying a level later never reaches back.
-        sessions[day][msg.sender] = Session(fid, castHash, uint64(block.timestamp), token.boostLevel(msg.sender), 0, false);
+        // Burn level and invite count are fixed when the session opens; later changes never reach back.
+        uint256 invites = inviteCount[msg.sender];
+        sessions[day][msg.sender] = Session(fid, castHash, uint8(invites < 10 ? invites : 10), uint64(block.timestamp), token.boostLevel(msg.sender), 0, false);
         _sessionWallets[day].push(msg.sender);
         sessionsHash[day] = keccak256(abi.encode(sessionsHash[day], msg.sender, fid, castHash, block.timestamp));
         emit MiningStarted(day, msg.sender, fid, castHash, uint64(block.timestamp));
@@ -172,9 +182,9 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     function signedAt(bytes32 digest, address signer) external view returns (uint256) { return _certificates[digest].signedAt[signer]; }
     /// @notice Public state including complete expected report and remaining publication work.
     function dayInfo(uint256 day) external view returns (Day memory) { return _days[day]; }
-    /// @notice The exact immutable boost formula (in fifths); social inputs themselves are quorum-attested.
-    function miningWeight(uint256 followers, bool nodeWork, uint256 level) external pure returns (uint256) {
-        return MineCastRewardPolicyV4.weight(followers, nodeWork, level);
+    /// @notice The exact immutable boost formula (in fiftieths); social inputs themselves are quorum-attested.
+    function miningWeight(uint256 followers, bool nodeWork, uint256 invites, uint256 level) external pure returns (uint256) {
+        return MineCastRewardPolicyV4.weight(followers, nodeWork, invites, level);
     }
 
     /// @notice Phase 1: a bonded key commits to keccak256(abi.encode(digest, key)) of the report it built
@@ -291,15 +301,21 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     function _publishAllocation(uint256 day, uint256 pool, Entry calldata e, bytes32[] calldata proof) private {
             Day storage d = _days[day];
             Session storage s = sessions[day][e.wallet];
-            if (e.fid == 0 || s.fid != e.fid || s.castHash != e.castHash || s.startedAt != e.startedAt || s.level != e.level || usedCast[e.castHash]
+            if (e.fid == 0 || s.fid != e.fid || s.castHash != e.castHash || s.startedAt != e.startedAt || s.level != e.level || s.invites != e.invites || usedCast[e.castHash]
                 || recipientForFid[day][e.fid] != address(0) || s.amount != 0
                 || (e.nodeWork ? !_didNodeWork(day, e.wallet, e.nodeKey) : e.nodeKey != address(0))) revert InvalidAllocation();
-            uint256 weight = MineCastRewardPolicyV4.weight(e.followers, e.nodeWork, e.level);
+            uint256 weight = MineCastRewardPolicyV4.weight(e.followers, e.nodeWork, e.invites, e.level);
             uint256 amount = MineCastRewardPolicyV4.allocation(pool, weight, d.report.totalWeight, e.level);
             if (amount > type(uint176).max || !MerkleProof.verifyCalldata(proof, d.report.root, allocationLeaf(day, d.published, e, amount))) revert InvalidAllocation();
             recipientForFid[day][e.fid] = e.wallet;
             s.amount = uint176(amount);
             usedCast[e.castHash] = true;
+            address inviter = inviterOf[e.wallet];
+            if (inviter != address(0) && e.followers >= 100 && !inviteCounted[e.fid]) {
+                inviteCounted[e.fid] = true;
+                ++inviteCount[inviter];
+                emit InviteCounted(inviter, e.fid, e.wallet);
+            }
             d.observedWeight += weight;
             d.observedAllocation += amount;
             emit AllocationPublished(day, d.published, e.wallet, e.fid, e.followers, e.nodeWork, e.castHash, e.startedAt, amount);
@@ -429,7 +445,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         if (pool == 0 || r.allocated > pool || r.leafCount > type(uint32).max) revert InvalidReport();
         if (r.leafCount == 0) {
             if (r.root != 0 || r.totalWeight != 0 || r.allocated != 0) revert InvalidReport();
-        } else if (r.root == 0 || r.totalWeight < r.leafCount * 5 || r.totalWeight > r.leafCount * 1400) revert InvalidReport();
+        } else if (r.root == 0 || r.totalWeight < r.leafCount * 50 || r.totalWeight > r.leafCount * 10_000) revert InvalidReport();
     }
 
     function _committed(uint256 day, address key, bytes32 digest) private view returns (bool) {

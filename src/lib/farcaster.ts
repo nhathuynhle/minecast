@@ -3,7 +3,7 @@ type MiniSdk = {
   context: Promise<{ user?: { fid?: number; username?: string } }>
   actions: {
     ready: () => Promise<void>
-    composeCast: (opts: { text?: string; close?: boolean }) => Promise<{ cast: { hash: string } | null } | undefined>
+    composeCast: (opts: { text?: string; embeds?: [string]; close?: boolean }) => Promise<{ cast: { hash: string } | null } | undefined>
   }
   quickAuth?: { getToken: (options?: { force?: string }) => Promise<{ token: string }> }
   wallet?: {
@@ -61,6 +61,7 @@ export async function bootFarcaster(): Promise<FarcasterIdentity | null> {
 
 export async function composeOnFarcaster(
   text: string,
+  embed?: string,
 ): Promise<{ status: "posted" | "cancelled" | "unavailable" | "unknown"; hash?: string }> {
   if (typeof window === "undefined") return { status: "unavailable" }
   const sdk = await loadSdk()
@@ -68,7 +69,7 @@ export async function composeOnFarcaster(
   const inside = await withTimeout(sdk.isInMiniApp(), 1200, false)
   if (!inside) return { status: "unavailable" }
   try {
-    const result = await sdk.actions.composeCast({ text, close: false })
+    const result = await sdk.actions.composeCast({ text, ...(embed ? { embeds: [embed] as [string] } : {}), close: false })
     if (result?.cast && /^0x[a-fA-F0-9]{40}$/.test(result.cast.hash)) return { status: "posted", hash: result.cast.hash }
     return { status: result?.cast === null ? "cancelled" : "unknown" }
   } catch {

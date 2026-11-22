@@ -8,6 +8,7 @@ export const FOLLOWER_TIERS = [
   [2_000, 10n],
   [1_000, 6n],
   [500, 4n],
+  [100, 2n], // same weight as 10; the floor only marks invitees that count (100+ followers)
   [10, 2n],
 ]
 

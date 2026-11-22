@@ -33,16 +33,18 @@ export async function readV4Network(client: PublicClient, config: V4Config, acco
     client.readContract({ address: config.dao, abi: daoAbi, functionName: "reserved", blockNumber }),
   ])
   const day = block.timestamp < launch ? 0n : (block.timestamp - launch) / DAY
-  const [pool, totalBond, balance, boostLevel, boostUnlocked, currentDistributor] = await Promise.all([
+  const [pool, totalBond, balance, boostLevel, boostUnlocked, currentDistributor, invites, inviter] = await Promise.all([
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "dailyEmissionForDay", args: [day], blockNumber }),
     client.readContract({ address: config.registry, abi: registryAbi, functionName: "totalWeightAt", args: [day], blockNumber }),
     account ? client.readContract({ address: config.token, abi: tokenAbi, functionName: "balanceOf", args: [account], blockNumber }) : 0n,
     account ? client.readContract({ address: config.token, abi: tokenAbi, functionName: "boostLevel", args: [account], blockNumber }) : 0,
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "boostUnlockedLevel", blockNumber }),
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "distributor", blockNumber }),
+    account ? client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "inviteCount", args: [account], blockNumber }) : 0n,
+    account ? client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "inviterOf", args: [account], blockNumber }) : zeroAddress,
   ])
   return { blockNumber, timestamp: block.timestamp, launch, day, totalSupply, cumulativeMinted, maxSupply, totalStaked, rewardLiability, treasuryBalance, reserved, pool, totalBond, balance,
-    boostLevel: Number(boostLevel), boostUnlocked: Number(boostUnlocked),
+    boostLevel: Number(boostLevel), boostUnlocked: Number(boostUnlocked), invites: Number(invites < 10n ? invites : 10n), inviter,
     // Stake governance moved mining to a new distributor: this build can settle old days but must not start sessions.
     currentDistributor, moved: currentDistributor.toLowerCase() !== config.distributor.toLowerCase() }
 }

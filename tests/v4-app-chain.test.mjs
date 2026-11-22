@@ -80,15 +80,15 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     assert.equal(updates.at(-1).status, expected, updates.at(-1).message)
     return { updates, pending }
   }
-  async function startSession(day) {
+  async function startSession(day, inviter) {
     await at(launch + day * DAY + 100n)
-    await action({ kind: 'startMining', fid: 42n, castHash: toHex(day + 1n, { size: 20 }) })
+    await action({ kind: 'startMining', fid: 42n, castHash: toHex(day + 1n, { size: 20 }), inviter })
   }
   async function publish(day) {
-    const [, castHash, startedAt, level] = await c.readContract({ ...mining, functionName: 'sessions', args: [day, miner] })
+    const [, castHash, invites, startedAt, level] = await c.readContract({ ...mining, functionName: 'sessions', args: [day, miner] })
     const bundle = buildOpenReport({ chainId: 84532, distributor: mining.address, day, launchTime: launch,
       sourceHash: await c.readContract({ ...mining, functionName: 'sessionsHash', args: [day] }),
-      entries: [{ fid: 42n, wallet: miner, followers: 2000n, nodeWork: false, castHash, startedAt, level }] })
+      entries: [{ fid: 42n, wallet: miner, followers: 2000n, nodeWork: false, castHash, startedAt, level, invites }] })
     const close = launch + (day + 1n) * DAY
     if ((await c.getBlock()).timestamp < close) await at(close) // phase 1 at the 00:00 UTC close: the node commits
     await c.setBalance({ address: key.address, value: parseEther('1') })
@@ -116,8 +116,11 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     selected = miner; rejectWallet = true; await action({ kind: 'activatePower' }, 'idle'); rejectWallet = false
     assert.equal(sent, 0)
   })
-  await startSession(0n)
+  const inviter = getAddress('0x' + 'a'.repeat(40))
+  await startSession(0n, inviter)
+  assert.equal((await network()).inviter, inviter) // an invite link is recorded with the session
   const first = await publish(0n)
+  assert.equal(await c.readContract({ ...mining, functionName: 'inviteCount', args: [inviter] }), 1n) // 2000 followers: counts
   await t.test('claim receipt and balance agree; repeated claim never reports success', async () => {
     let n = await network(), d = await readApp.readV4Day(c, config, n, 0n, miner)
     assert.equal(miningPhase(d, n.timestamp), 'claimable'); assert.equal(d.amount, first.amounts[0])
