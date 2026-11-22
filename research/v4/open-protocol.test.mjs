@@ -13,7 +13,7 @@ import { prepareDeployment, GOVERNANCE_DELAY } from './prepare-open-deployment.m
 import { verifyDeployment } from './verify-open-deployment.mjs'
 import { buildOpenReport, openDigest, typedReport, weightOf } from './open-report.mjs'
 import { miningPoolForDay, lifetimeCeilingAfterDays, MAX_SUPPLY, DEV_PREMINE } from './node/bootstrap-model.mjs'
-import { commitmentOf, processDay } from './node/open-worker.mjs'
+import { commitmentOf, processDay, runPass } from './node/open-worker.mjs'
 import { buildProposal } from './governance.mjs'
 
 const DAY = 86400n, HOUR = 3600n, COMMIT = 1800n, REVIEW = HOUR, launch = 1893456000n, unit = parseEther('1'), minBond = parseEther('1000000')
@@ -365,6 +365,20 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(registry, 'totalWeightAt', [3n]), 0n)
     await denied(registry, 'withdrawNode', [keys[0].address], admin, 'InvalidPhase')
     await denied(mining, 'proveEquivocation', [keys[0].address, a.report, await sig(keys[0], a.report), b.report, await sig(keys[0], b.report)], outsider, 'InvalidEvidence')
+  })
+
+  await scenario('the worker activates its own key once the 7-day join delay ends', async () => {
+    await bond(keys[1])
+    await c.setBalance({ address: keys[1].address, value: parseEther('1') })
+    const ctx = { client: c, account: keys[1], distributor: mining.address, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-journal-')),
+      collect: async () => { throw Error('nothing to report yet') } }
+    const [, readyAt] = await read(registry, 'nodes', [keys[1].address])
+    await at(readyAt - 1n); await runPass(ctx)
+    assert.equal((await read(registry, 'nodes', [keys[1].address]))[5], false) // not ready yet: nothing sent
+    await at(readyAt); await runPass(ctx)
+    const node = await read(registry, 'nodes', [keys[1].address])
+    assert.equal(node[5], true); assert.equal(node[2], (readyAt - launch) / DAY + 1n) // counts from the next day
+    await runPass(ctx) // already active: no second transaction
   })
 
   await scenario('a lone node that misses the 30-minute commit phase still signs its own report late', async () => {

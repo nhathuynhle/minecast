@@ -58,6 +58,8 @@ const abi = parseAbi([
   'function commitments(uint256 day, address signer) view returns (bytes32)',
   'function certifiedSigner(uint256 day, address signingKey) view returns (bool)',
   'function proveCertifiedSignature(uint256 day, address signingKey)',
+  'function nodes(address) view returns (address operator, uint64 readyAt, uint64 startDay, uint64 endDay, uint208 weight, bool activated, bool slashed, bool withdrawn)',
+  'function activateNode(address signingKey)',
   'event ReportAnnounced(uint256 indexed day, address indexed signer, Entry[] entries)',
 ])
 const json = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v)
@@ -329,12 +331,24 @@ export async function processDay({ client, account, distributor, dir, collect },
   return 'activated'
 }
 
+// A registered key activates itself as soon as its 7-day join delay ends (anyone may call activateNode),
+// so the operator never has to catch the moment by hand. It counts from the next day (day 0 if before launch).
+async function activateSelf({ client, account, distributor }, now) {
+  const registry = await client.readContract({ address: distributor, abi, functionName: 'registry' })
+  const [operator, readyAt, , endDay, , activated] = await client.readContract({ address: registry, abi, functionName: 'nodes', args: [account.address] })
+  if (operator === zeroAddress || activated || endDay !== 2n ** 64n - 1n || now < readyAt) return
+  const hash = await client.writeContract({ address: registry, abi, functionName: 'activateNode', args: [account.address], account })
+  if ((await client.waitForTransactionReceipt({ hash })).status !== 'success') throw Error('activateNode reverted')
+  console.log('node: activated; it counts from the next day')
+}
+
 export async function runPass(ctx) {
   const tokenRead = async (functionName, args) => ctx.client.readContract({ address: token, abi, functionName, args })
   const token = await ctx.client.readContract({ address: ctx.distributor, abi, functionName: 'token' })
   const launchTime = await tokenRead('launchTime')
   const now = (await ctx.client.getBlock()).timestamp
   const today = now < launchTime ? 0n : (now - launchTime) / DAY
+  try { await activateSelf(ctx, now) } catch (error) { process.exitCode = 1; console.error(`node: activation failed: ${error.shortMessage ?? error.message}`) }
   for (let day = today > 8n ? today - 8n : 0n; day < today; day++) {
     // A distributor built for other rules makes saveSigned refuse its days: upgrade the worker to match.
     try { console.log(`day ${day}: ${await processDay({ ...ctx, distributor: await tokenRead('distributorForDay', [day]) }, day, launchTime, now)}`) }
