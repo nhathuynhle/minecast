@@ -2,12 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { createTestClient, http, publicActions, walletActions, parseEther, keccak256, toHex, getAddress } from 'viem'
+import { createTestClient, http, publicActions, walletActions, parseEther, keccak256, toHex, getAddress, getContractAddress, encodeFunctionData, zeroAddress } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
 import { compileOpen } from '../research/v4/compile-open.mjs'
 import { buildOpenReport, openDigest, typedReport } from '../research/v4/open-report.mjs'
 import { commitmentOf } from '../research/v4/node/open-worker.mjs'
+import { GOVERNANCE_DELAY } from '../research/v4/prepare-open-deployment.mjs'
 import { loadModule } from './v4-test-loader.mjs'
 import { checkBrowser } from './v4-browser-check.mjs'
 
@@ -59,19 +60,23 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
   const token = await deploy('TokenCastOpenV4', [admin, admin, launch])
   const registry = await deploy('MineCastNodeRegistryV4', [token.address])
   const staking = await deploy('MineCastOpenStakingV4', [token.address])
-  // Governance is not exercised by the miniapp here; any contract stands in for the timelock.
-  const dao = await deploy('MineCastOpenDaoV4', [token.address, staking.address, staking.address])
+  // The timelock's only proposer is the governor deployed three transactions later (as in the real deployment).
+  const governorAt = getContractAddress({ from: admin, nonce: BigInt(await c.getTransactionCount({ address: admin }) + 3) })
+  const timelock = await deploy('TimelockController', [GOVERNANCE_DELAY, [governorAt], [zeroAddress], zeroAddress])
+  const dao = await deploy('MineCastOpenDaoV4', [token.address, staking.address, timelock.address])
   const mining = await deploy('MineCastOpenDistributorV4', [token.address, registry.address, staking.address, dao.address])
-  const config = { chainId: 84532, token: token.address, distributor: mining.address, registry: registry.address, staking: staking.address, dao: dao.address }
-  await send(token, 'finalizeDistributor', [mining.address, staking.address])
+  const governor = await deploy('MineCastGovernorV4', [staking.address, timelock.address, registry.address, dao.address, 10, 50])
+  assert.equal(governor.address, governorAt)
+  const config = { chainId: 84532, token: token.address, distributor: mining.address, registry: registry.address, staking: staking.address, dao: dao.address, governor: governor.address }
+  await send(token, 'finalizeDistributor', [mining.address, timelock.address])
   const key = privateKeyToAccount(generatePrivateKey())
   await send(token, 'approve', [registry.address, parseEther('1000000')])
   await send(registry, 'registerNode', [key.address, parseEther('1000000')])
   await at(launch - 6n * DAY); await send(registry, 'activateNode', [key.address])
   const network = () => readApp.readV4Network(c, config, miner)
-  async function action(input, expected = 'confirmed') {
+  async function action(input, expected = 'confirmed', who = miner) {
     const updates = [], pending = []
-    await executeV4Action(c, config, miner, input, x => updates.push(x), x => pending.push(x))
+    await executeV4Action(c, config, who, input, x => updates.push(x), x => pending.push(x))
     assert.equal(updates.at(-1).status, expected, updates.at(-1).message)
     return { updates, pending }
   }
@@ -182,6 +187,42 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     await action({ kind: 'claimAirdrop', month: 203003n })
     assert.equal((await network()).balance, n.balance + d.claimable)
     assert.equal((await readApp.readV4Dao(c, config, await network(), 203003n, miner)).collected, true)
+  })
+  await t.test('stake governance: a node operator proposes a treasury spend, stakers vote, anyone queues and executes', async () => {
+    let g = await readApp.readV4Governance(c, config, await network(), admin)
+    assert.equal(g.proposals.length, 0); assert.equal(g.nodeKey, key.address); assert.ok(g.treasury.capRemaining > 0n)
+    await assert.rejects(readApp.readV4Governance(c, { ...config, dao: staking.address }, await network(), admin))
+    const grant = parseEther('1000'), description = 'Fund a community dashboard\nPaid in one transfer, reported in the channel.'
+    const calldatas = [encodeFunctionData({ abi: appABI.daoAbi, functionName: 'spend', args: [other, grant] })]
+    selected = admin
+    await action({ kind: 'propose', targets: [dao.address], values: [0n], calldatas, description }, 'error', admin) // 400k-stake rule, no node path
+    await action({ kind: 'propose', targets: [dao.address], values: [0n], calldatas, description, nodeKey: key.address }, 'confirmed', admin)
+    selected = miner
+    g = await readApp.readV4Governance(c, config, await network(), miner)
+    let [p] = g.proposals
+    assert.equal(p.state, 'Pending'); assert.equal(p.description, description); assert.equal(p.supermajority, false)
+    assert.deepEqual(p.actions, [{ kind: 'spend', to: other, amount: grant }])
+    await c.mine({ blocks: 11 })
+    p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
+    assert.equal(p.state, 'Active'); assert.equal(p.power, amount)
+    await action({ kind: 'castVote', proposalId: p.id, support: 1 })
+    await action({ kind: 'castVote', proposalId: p.id, support: 0 }, 'error')
+    p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
+    assert.equal(p.voted, true); assert.equal(p.forVotes, amount)
+    await c.mine({ blocks: 51 })
+    p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
+    assert.equal(p.state, 'Succeeded')
+    const calls = { targets: p.targets, values: p.values, calldatas: p.calldatas, descriptionHash: p.descriptionHash }
+    await action({ kind: 'queueProposal', ...calls })
+    p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
+    assert.equal(p.state, 'Queued')
+    await action({ kind: 'executeProposal', ...calls }, 'error') // still in the 14-day timelock
+    await at(p.eta)
+    const before = await c.readContract({ ...token, functionName: 'balanceOf', args: [other] })
+    await action({ kind: 'executeProposal', ...calls })
+    assert.equal(await c.readContract({ ...token, functionName: 'balanceOf', args: [other] }), before + grant)
+    g = await readApp.readV4Governance(c, config, await network(), miner)
+    assert.equal(g.proposals[0].state, 'Executed'); assert.equal(g.treasury.spent, grant)
     await action({ kind: 'withdraw', amount })
     assert.equal((await network()).totalStaked, 0n)
   })

@@ -28,6 +28,8 @@ contract MineCastGovernorV4 is Governor, GovernorSettings, GovernorCountingSimpl
     mapping(uint256 proposalId => uint256) public quorumFloor;
     mapping(uint256 proposalId => bool) public needsSupermajority;
     mapping(address proposer => uint256) public latestProposalId;
+    struct ProposalRef { uint256 id; uint64 createdBlock; }
+    ProposalRef[] private _proposals;
 
     error ProposerHasLiveProposal(address proposer, uint256 proposalId);
 
@@ -62,6 +64,7 @@ contract MineCastGovernorV4 is Governor, GovernorSettings, GovernorCountingSimpl
         }
         proposalId = super._propose(targets, values, calldatas, description, proposer);
         latestProposalId[proposer] = proposalId;
+        _proposals.push(ProposalRef(proposalId, uint64(block.number)));
         quorumFloor[proposalId] = registry.token().releasedSupply() * QUORUM_FLOOR_BPS / 10_000;
         for (uint256 i; i < targets.length; ++i) {
             // Only a plain DAO spend counts as ordinary business; rule changes and governance edits need 2/3.
@@ -70,6 +73,14 @@ contract MineCastGovernorV4 is Governor, GovernorSettings, GovernorCountingSimpl
                 break;
             }
         }
+    }
+
+    /// @notice Proposals in creation order, so apps can list them without scanning logs. The full
+    ///         ProposalCreated event (actions and description) is in the block returned by proposalAt.
+    function proposalCount() external view returns (uint256) { return _proposals.length; }
+    function proposalAt(uint256 index) external view returns (uint256 proposalId, uint256 createdBlock) {
+        ProposalRef storage p = _proposals[index];
+        return (p.id, p.createdBlock);
     }
 
     function _quorumReached(uint256 proposalId) internal view override(Governor, GovernorCountingSimple) returns (bool) {

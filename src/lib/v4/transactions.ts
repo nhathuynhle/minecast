@@ -1,7 +1,7 @@
 import { createWalletClient, custom, encodeFunctionData, getAddress, type Abi, type Address, type Hash, type Hex, type PublicClient } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { ethereumProviderForChain } from "../farcaster"
-import { tokenAbi, distributorAbi, stakingAbi, daoAbi } from "./abi"
+import { tokenAbi, distributorAbi, stakingAbi, daoAbi, governorAbi } from "./abi"
 import { type V4Config } from "./config"
 import { verifyV4 } from "./read"
 
@@ -15,9 +15,16 @@ export type V4Action =
   | { kind: "vote"; month: bigint; yes: boolean }
   | { kind: "settleVote" | "claimAirdrop" | "releaseAirdrop"; month: bigint }
   | { kind: "finalizeMonth"; timestamp: bigint }
+  | { kind: "propose"; targets: Address[]; values: bigint[]; calldatas: Hex[]; description: string; nodeKey?: Address }
+  | { kind: "castVote"; proposalId: bigint; support: 0 | 1 | 2 }
+  | { kind: "queueProposal" | "executeProposal"; targets: Address[]; values: bigint[]; calldatas: Hex[]; descriptionHash: Hex }
 export type TxProgress = { status: "idle" | "checking" | "signature" | "pending" | "confirmed" | "error"; message: string; hash?: Hash }
 export type PendingV4Tx = { hash: Hash; account: Address; to: Address; data: Hash; label: string }
 
+function governorOf(config: V4Config) {
+  if (!config.governor) throw Error("Stake governance is not configured for this deployment.")
+  return { address: config.governor, abi: governorAbi as Abi }
+}
 export function actionCall(config: V4Config, action: V4Action): { address: Address; abi: Abi; functionName: string; args: readonly unknown[]; label: string } {
   const staking = { address: config.staking, abi: stakingAbi }
   const mining = { address: config.distributor, abi: distributorAbi }
@@ -44,6 +51,14 @@ export function actionCall(config: V4Config, action: V4Action): { address: Addre
     case "settleVote": return { ...dao, functionName: "settle", args: [action.month], label: "Execute vote result" }
     case "claimAirdrop": return { ...dao, functionName: "claimAirdrop", args: [action.month], label: "Airdrop claim" }
     case "releaseAirdrop": return { ...dao, functionName: "releaseExpiredAirdrop", args: [action.month], label: "Release expired airdrop" }
+    case "castVote": return { ...governorOf(config), functionName: "castVote", args: [action.proposalId, action.support], label: ["Vote against", "Vote for", "Abstain"][action.support] }
+    case "queueProposal": case "executeProposal": return { ...governorOf(config), functionName: action.kind === "queueProposal" ? "queue" : "execute",
+      args: [action.targets, action.values, action.calldatas, action.descriptionHash], label: action.kind === "queueProposal" ? "Queue proposal" : "Execute proposal" }
+    case "propose":
+      if (!action.description.trim() || !action.targets.length) throw Error("A proposal needs a description and an action.")
+      return action.nodeKey
+        ? { ...governorOf(config), functionName: "proposeAsNode", args: [action.nodeKey, action.targets, action.values, action.calldatas, action.description], label: "Submit proposal as node operator" }
+        : { ...governorOf(config), functionName: "propose", args: [action.targets, action.values, action.calldatas, action.description], label: "Submit proposal" }
   }
 }
 export function isRejection(error: unknown): boolean {
@@ -56,6 +71,10 @@ export function friendlyV4Error(error: unknown): string {
   if (/insufficient funds/i.test(message)) return "Your wallet needs ETH on this network to pay the transaction fee."
   if (/InvalidPhase|InvalidRound|InvalidVote|NothingToClaim|AlreadyClaimed/i.test(message)) return "The onchain state changed or this action is not available yet. Refresh and try again."
   if (/Locked/i.test(message)) return "Your stake has not completed its 30-day lock."
+  if (/GovernorInsufficientProposerVotes|GovernorRestrictedProposer/.test(message)) return "Proposing needs 1,000,000 TOKENCAST of active voting power, or an active node you operate."
+  if (/ProposerHasLiveProposal/.test(message)) return "You already have a proposal that is pending or being voted on."
+  if (/GovernorAlreadyCastVote/.test(message)) return "This wallet has already voted on that proposal."
+  if (/GovernorUnexpectedProposalState|GovernorNonexistentProposal/.test(message)) return "The proposal is not in the right state for that action. Refresh and try again."
   if (/fetch|HTTP|timeout|timed out|429|503/i.test(message)) return "Network data is temporarily unavailable. Refresh to try again."
   return message.split("\n")[0].slice(0, 220)
 }

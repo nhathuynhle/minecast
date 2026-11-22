@@ -1,5 +1,5 @@
-import { zeroAddress, type Address, type PublicClient } from "viem"
-import { tokenAbi, distributorAbi, stakingAbi, daoAbi, registryAbi } from "./abi"
+import { decodeFunctionData, keccak256, parseAbi, toHex, zeroAddress, type Address, type Hex, type PublicClient } from "viem"
+import { tokenAbi, distributorAbi, stakingAbi, daoAbi, registryAbi, governorAbi } from "./abi"
 import { V4_POLICY_HASH, type V4Config } from "./config"
 import { DAY, monthAt, monthStart, previousMonth, type MiningDay } from "./state"
 
@@ -120,3 +120,95 @@ export async function readV4Dao(client: PublicClient, config: V4Config, network:
     claimable: account && eligible && r[2] > network.timestamp && !collected && r[7] > 0n ? r[8] * share / r[7] : 0n }
 }
 export type V4Dao = Awaited<ReturnType<typeof readV4Dao>>
+
+export const PROPOSAL_STATES = ["Pending", "Active", "Canceled", "Defeated", "Succeeded", "Queued", "Expired", "Executed"] as const
+export const BLOCK_SECONDS = 2n // Base and Base Sepolia; Governor deadlines are block numbers on the stake clock.
+export type V4ProposalAction = { kind: "spend" | "spendLarge"; to: Address; amount: bigint } | { kind: "call"; target: Address; label: string }
+export type V4Proposal = {
+  id: bigint; proposer: Address; state: typeof PROPOSAL_STATES[number]; description: string; actions: V4ProposalAction[]
+  targets: Address[]; values: bigint[]; calldatas: Hex[]; descriptionHash: Hex
+  forVotes: bigint; againstVotes: bigint; abstainVotes: bigint; quorum: bigint; supermajority: boolean
+  snapshot: bigint; deadline: bigint; eta: bigint; voted: boolean; power: bigint
+}
+const timelockAbi = parseAbi(["function getMinDelay() view returns (uint256)"])
+type Created = { proposer: Address; targets: Address[]; values: bigint[]; calldatas: Hex[]; description: string }
+const created = new Map<string, Created>() // ProposalCreated never changes, so it is read once per proposal
+
+function decodeAction(config: V4Config, target: Address, data: Hex): V4ProposalAction {
+  const known = [[config.dao, daoAbi], [config.token, tokenAbi], [config.registry, registryAbi], [config.governor, governorAbi]] as const
+  const abi = known.find(([address]) => address?.toLowerCase() === target.toLowerCase())?.[1]
+  try {
+    if (abi) {
+      const call = decodeFunctionData({ abi: abi as any, data })
+      if ((call.functionName === "spend" || call.functionName === "spendLarge") && abi === daoAbi) return { kind: call.functionName, to: call.args![0] as Address, amount: call.args![1] as bigint }
+      return { kind: "call", target, label: call.functionName }
+    }
+  } catch { /* unknown selector: shown raw */ }
+  return { kind: "call", target, label: data.slice(0, 10) }
+}
+
+/** Stake governance and treasury state for the miniapp: the latest proposals, voting power and the spend cap. */
+export async function readV4Governance(client: PublicClient, config: V4Config, network: V4Network, account?: Address, limit = 10) {
+  const governor = config.governor
+  if (!governor) return null
+  const blockNumber = network.blockNumber, gov = { address: governor, abi: governorAbi, blockNumber } as const
+  const [dao, staking, registry, timelock, daoGovernance] = await Promise.all([
+    client.readContract({ ...gov, functionName: "dao" }), client.readContract({ ...gov, functionName: "token" }),
+    client.readContract({ ...gov, functionName: "registry" }), client.readContract({ ...gov, functionName: "timelock" }),
+    client.readContract({ address: config.dao, abi: daoAbi, functionName: "governance", blockNumber }),
+  ])
+  if ([dao, staking, registry, timelock].some((v, i) => v.toLowerCase() !== [config.dao, config.staking, config.registry, daoGovernance][i].toLowerCase()))
+    throw Error("Governor links do not match this V4 deployment. Governance actions are disabled.")
+  const period = network.timestamp / (30n * DAY)
+  const [threshold, votingDelay, votingPeriod, timelockDelay, count, clock, spent, keys] = await Promise.all([
+    client.readContract({ ...gov, functionName: "proposalThreshold" }), client.readContract({ ...gov, functionName: "votingDelay" }),
+    client.readContract({ ...gov, functionName: "votingPeriod" }), client.readContract({ address: timelock, abi: timelockAbi, functionName: "getMinDelay", blockNumber }),
+    client.readContract({ ...gov, functionName: "proposalCount" }), client.readContract({ ...gov, functionName: "clock" }),
+    client.readContract({ address: config.dao, abi: daoAbi, functionName: "spentInPeriod", args: [period], blockNumber }),
+    account ? client.readContract({ address: config.registry, abi: registryAbi, functionName: "keysOf", args: [account], blockNumber }) : [],
+  ])
+  const votes = account && clock > 0n ? await client.readContract({ ...gov, functionName: "getVotes", args: [account, BigInt(clock) - 1n] }) : 0n
+  // An active node's operator may propose without the stake threshold (proposeAsNode with that key).
+  const weights = await Promise.all(keys.map(key => client.readContract({ address: config.registry, abi: registryAbi, functionName: "weightAt", args: [key, network.day], blockNumber })))
+  const nodeKey = keys.find((_, i) => weights[i] > 0n)
+  const unreserved = network.treasuryBalance - network.reserved
+  // dao.spend allows (spent + amount) <= 5% of (unreserved + spent) in each 30-day period.
+  const cap = (unreserved + spent) / 20n
+  const indexes = Array.from({ length: Math.min(limit, Number(count)) }, (_, i) => count - 1n - BigInt(i))
+  const proposals = await Promise.all(indexes.map(async index => {
+    const [id, createdBlock] = await client.readContract({ ...gov, functionName: "proposalAt", args: [index] })
+    const key = `${config.chainId}:${governor.toLowerCase()}:${id}`
+    if (!created.has(key)) {
+      const logs = await client.getContractEvents({ address: governor, abi: governorAbi, eventName: "ProposalCreated", fromBlock: createdBlock, toBlock: createdBlock })
+      const log = logs.find(l => l.args.proposalId === id)
+      if (!log) throw Error("Proposal details are temporarily unavailable.")
+      const a = log.args as unknown as Created
+      created.set(key, { proposer: a.proposer, targets: [...a.targets], values: [...a.values], calldatas: [...a.calldatas], description: a.description })
+    }
+    const c = created.get(key)!
+    const [state, tally, supermajority, snapshot, deadline, eta, voted] = await Promise.all([
+      client.readContract({ ...gov, functionName: "state", args: [id] }), client.readContract({ ...gov, functionName: "proposalVotes", args: [id] }),
+      client.readContract({ ...gov, functionName: "needsSupermajority", args: [id] }),
+      client.readContract({ ...gov, functionName: "proposalSnapshot", args: [id] }), client.readContract({ ...gov, functionName: "proposalDeadline", args: [id] }),
+      client.readContract({ ...gov, functionName: "proposalEta", args: [id] }),
+      account ? client.readContract({ ...gov, functionName: "hasVoted", args: [id, account] }) : false,
+    ])
+    // Quorum and voting power exist only once the snapshot block has passed (zero while the proposal is pending).
+    const started = snapshot < BigInt(clock)
+    const [quorum, power] = await Promise.all([
+      started ? client.readContract({ ...gov, functionName: "proposalQuorum", args: [id] }) : 0n,
+      account && started ? client.readContract({ ...gov, functionName: "getVotes", args: [account, snapshot] }) : 0n,
+    ])
+    return { id, proposer: c.proposer, state: PROPOSAL_STATES[state], description: c.description,
+      actions: c.targets.map((target, i) => decodeAction(config, target, c.calldatas[i])),
+      targets: c.targets, values: c.values, calldatas: c.calldatas, descriptionHash: keccak256(toHex(c.description)),
+      againstVotes: tally[0], forVotes: tally[1], abstainVotes: tally[2], quorum, supermajority, snapshot, deadline, eta, voted, power } satisfies V4Proposal
+  }))
+  return { governor, clock: BigInt(clock), threshold, votes, nodeKey, votingDelay, votingPeriod, timelockDelay, proposals,
+    treasury: { balance: network.treasuryBalance, reserved: network.reserved, unreserved, spent, capRemaining: cap > spent ? cap - spent : 0n,
+      periodEnd: (period + 1n) * 30n * DAY } }
+}
+export type V4Governance = NonNullable<Awaited<ReturnType<typeof readV4Governance>>>
+
+/** Estimated wall-clock time of a stake-clock block. */
+export function blockTime(network: V4Network, block: bigint) { return network.timestamp + (block - network.blockNumber) * BLOCK_SECONDS }

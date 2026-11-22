@@ -47,3 +47,8 @@
 .v4-nav button > svg { width: 21px; height: 21px; }
 .v4-nav button[aria-current] { color: #c3a3ef; background: #30263f; border-radius: .85rem; }
 @media (max-width: 360px) { .v4-brand .mc-network { font-size: .65rem; padding: .35rem .45rem; } .v4-brand h1 { font-size: 1.2rem; } .v4-actions { gap: .45rem; } }
+.v4-proposal { border-top: 1px solid #353044; padding-top: 1rem; margin-top: 1rem; }
+.v4-proposal:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+.v4-proposal h3 { overflow-wrap: anywhere; }
+.v4-proposal ul { margin: .5rem 0 0 1.1rem; list-style: disc; }
+.v4-pre { white-space: pre-wrap; overflow-wrap: anywhere; }

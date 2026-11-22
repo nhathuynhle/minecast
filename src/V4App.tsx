@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
-import { getAddress, isAddress, parseUnits, type Address } from "viem"
+import { encodeFunctionData, getAddress, isAddress, parseUnits, type Address } from "viem"
 import { base, baseSepolia } from "viem/chains"
 import { Layers, Radio, Wallet, Vote, RefreshCw, ExternalLink, Check, Loader2, ArrowDownToLine, Send } from "lucide-react"
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, ethereumProviderForChain, farcasterFetch, type FarcasterIdentity, type EthereumProvider } from "./lib/farcaster"
 import { createV4Client } from "./lib/v4/client"
 import { deploymentKey, parseV4Config, type V4Config } from "./lib/v4/config"
-import { readV4Network, readV4Day, readV4Stake, readV4Dao, claimableDays, type V4Network, type V4Stake, type V4Dao } from "./lib/v4/read"
+import { readV4Network, readV4Day, readV4Stake, readV4Dao, readV4Governance, claimableDays, blockTime, BLOCK_SECONDS, type V4Network, type V4Stake, type V4Dao, type V4Governance, type V4Proposal } from "./lib/v4/read"
+import { daoAbi } from "./lib/v4/abi"
 import { executeV4Action, confirmV4Transaction, friendlyV4Error, isRejection, type PendingV4Tx, type TxProgress, type V4Action } from "./lib/v4/transactions"
 import { countdown, miningPhase, phaseDeadline, monthAt, monthStart, previousMonth, tokens, validMonth, DAY, type V4Session, type MiningDay, type MiningPhase } from "./lib/v4/state"
 import { estimateV4Reward } from "./lib/v4/estimates"
@@ -20,6 +21,8 @@ const labels: Record<MiningPhase, string> = {
 }
 const date = (seconds: bigint) => seconds > 0n ? new Date(Number(seconds) * 1000).toLocaleString() : "—"
 const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`
+const span = (seconds: bigint) => seconds < 2n * DAY ? `${String((seconds + 1799n) / 3600n)} hours` : `${String((seconds + DAY / 2n) / DAY)} days`
+const calls = (p: V4Proposal) => ({ targets: p.targets, values: p.values, calldatas: p.calldatas, descriptionHash: p.descriptionHash })
 function load<T>(key: string): T | null { try { return JSON.parse(localStorage.getItem(key) ?? "null") } catch { return null } }
 function save(key: string, value: unknown) { try { value === null ? localStorage.removeItem(key) : localStorage.setItem(key, JSON.stringify(value)) } catch { /* Chain remains authoritative. */ } }
 function FarcasterIcon() { return <svg viewBox="10 11 34 34" fill="currentColor" aria-hidden="true"><path d="M12 15h30v3.5h-4v3.5h4v19h-6l-2.4-12.5C32.8 24.2 30.3 22 27 22s-5.8 2.2-6.6 6.5L18 41h-6V22h4v-3.5h-4Z" /></svg> }
@@ -50,6 +53,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const [dayData, setDayData] = useState<MiningDay | null>(null)
   const [stake, setStake] = useState<V4Stake | null>(null)
   const [dao, setDao] = useState<V4Dao | null>(null)
+  const [gov, setGov] = useState<V4Governance | null>(null)
+  const [govError, setGovError] = useState("")
+  const [proposalTo, setProposalTo] = useState("")
+  const [proposalAmount, setProposalAmount] = useState("")
+  const [proposalText, setProposalText] = useState("")
   const [sessions, setSessions] = useState<V4Session[]>([])
   const [eligible, setEligible] = useState(false)
   const [ready, setReady] = useState<bigint[]>([]) // earlier days this wallet can claim now
@@ -123,10 +131,14 @@ function ConnectedV4({ config }: { config: V4Config }) {
       if (current !== sequence.current) return
       sessionsRef.current = rows
       setNetwork(n); setDayData(d); setStake(st); setDao(gov); setSessions(rows); setEligible(canCast); setReady(claimable)
+      // Stake governance is read only while the DAO tab is open: it is the heaviest set of calls.
+      if (tab === "dao" && config.governor) await readV4Governance(client, config, n, account)
+        .then(g => { if (current === sequence.current) { setGov(g); setGovError("") } })
+        .catch(e => { if (current === sequence.current) setGovError(friendlyV4Error(e)) })
       setSessionMessage(reason); setSessionError(intakeError); setUpdated(readAt); setError("")
     } catch (e) { if (current === sequence.current) { setError(friendlyV4Error(e)); setUpdated(0); setEligible(false) } }
     finally { if (current === sequence.current) setRefreshing(false) }
-  }, [client, config, account, identity, dayInput, epochInput, monthInput])
+  }, [client, config, account, identity, dayInput, epochInput, monthInput, tab])
   useEffect(() => {
     void refresh()
     const visible = () => { if (document.visibilityState === "visible") void refresh() }
@@ -155,11 +167,23 @@ function ConnectedV4({ config }: { config: V4Config }) {
     catch (e) { if (!isRejection(e)) setError(friendlyV4Error(e)) }
     finally { actionBusy.current = false; setBusy(false) }
   }
-  async function transact(action: V4Action) {
-    if (locked || !account || actionBusy.current) return
+  async function transact(action: V4Action): Promise<boolean> {
+    if (locked || !account || actionBusy.current) return false
     actionBusy.current = true; setBusy(true)
-    try { await executeV4Action(client, config, account, action, updateTransaction, remember); if (accountRef.current === account) await refresh() }
+    try { const ok = await executeV4Action(client, config, account, action, updateTransaction, remember); if (accountRef.current === account) await refresh(); return ok }
     finally { actionBusy.current = false; setBusy(false) }
+  }
+  // A treasury proposal pays one recipient from the DAO; above what a majority may spend now it becomes spendLarge (two thirds).
+  const proposalWei = (() => { try { return /^\d+(\.\d{1,18})?$/.test(proposalAmount.trim()) ? parseUnits(proposalAmount.trim(), 18) : null } catch { return null } })()
+  const proposalLarge = !!gov && proposalWei !== null && proposalWei > gov.treasury.capRemaining
+  const canPropose = !!gov && (gov.votes >= gov.threshold || !!gov.nodeKey)
+  const proposalValid = !!gov && isAddress(proposalTo.trim()) && proposalWei !== null && proposalWei > 0n && proposalWei <= gov.treasury.unreserved && proposalText.trim().length >= 10
+  async function submitProposal() {
+    if (!gov || !proposalValid || proposalWei === null) return
+    const data = encodeFunctionData({ abi: daoAbi, functionName: proposalLarge ? "spendLarge" : "spend", args: [getAddress(proposalTo.trim()), proposalWei] })
+    const ok = await transact({ kind: "propose", targets: [config.dao], values: [0n], calldatas: [data], description: proposalText.trim(),
+      nodeKey: gov.votes < gov.threshold ? gov.nodeKey : undefined })
+    if (ok) { setProposalTo(""); setProposalAmount(""); setProposalText("") }
   }
   async function checkPending() {
     if (!pending || actionBusy.current) return
@@ -309,6 +333,47 @@ function ConnectedV4({ config }: { config: V4Config }) {
               {dao.claimEnd > 0n && timestamp >= dao.claimEnd && dao.remaining > 0n && <Button secondary disabled={locked} onClick={() => void transact({ kind: "releaseAirdrop", month: dao.month })}>Release expired airdrop reserve</Button>}</details>
           </>}
         </Card>
+        {config.governor && <Card title="Treasury">
+          {gov ? <><dl className="v4-stats"><Stat label="Balance">{tokens(gov.treasury.balance, 0)}</Stat><Stat label="Reserved for monthly votes">{tokens(gov.treasury.reserved, 0)}</Stat>
+            <Stat label="Majority can still spend">{tokens(gov.treasury.capRemaining, 0)}</Stat><Stat label="Spent this period">{tokens(gov.treasury.spent, 0)}</Stat></dl>
+            <p className="v4-muted">No one holds a key to the treasury. Stakers vote on every spend: a simple majority may spend up to 5% of the unreserved balance in each 30-day period (this one ends {date(gov.treasury.periodEnd)}); larger spends need two thirds. Every passed proposal waits {span(gov.timelockDelay)} in the timelock before anyone can execute it.</p></>
+            : <p className="v4-muted">{govError || "Reading the treasury…"}</p>}
+        </Card>}
+        {gov && <Card title="Proposals">
+          {gov.proposals.length === 0 && <p className="v4-muted">No proposals yet.</p>}
+          {gov.proposals.map(p => {
+            const open = p.state === "Active"
+            const when = p.state === "Pending" ? `Voting starts about ${date(blockTime(network, p.snapshot))}` : open ? `Voting ends about ${date(blockTime(network, p.deadline))}`
+              : p.state === "Queued" ? `Executable from ${date(p.eta)}` : ""
+            return <div key={String(p.id)} className="v4-proposal">
+              <div className="v4-row"><h3>{p.description.split("\n")[0].slice(0, 120)}</h3><span className="mc-era">{p.state}</span></div>
+              <ul className="v4-muted">{p.actions.map((a, i) => <li key={i}>{a.kind === "call" ? `Contract call ${a.label} on ${short(a.target)}`
+                : `Pay ${tokens(a.amount, 0)} TOKENCAST to ${short(a.to)}${a.kind === "spendLarge" ? " (above the 5% cap)" : ""}`}</li>)}</ul>
+              <dl className="v4-stats"><Stat label="For">{tokens(p.forVotes, 0)}</Stat><Stat label="Against">{tokens(p.againstVotes, 0)}</Stat>
+                <Stat label="Quorum (for + abstain)">{p.state === "Pending" ? "—" : tokens(p.quorum, 0)}</Stat><Stat label="To pass">{p.supermajority ? "Two thirds" : "Majority"}</Stat></dl>
+              {when && <p className="v4-muted">{when}</p>}
+              {open && p.voted && <p className="v4-success">Your vote is recorded.</p>}
+              {open && !p.voted && <div className="v4-actions">{([1, 0, 2] as const).map(support => <Button key={support} secondary={support !== 1} disabled={locked || p.power === 0n}
+                onClick={() => void transact({ kind: "castVote", proposalId: p.id, support })}>{["Against", "For", "Abstain"][support]}</Button>)}</div>}
+              {open && !p.voted && account && p.power === 0n && <p className="v4-muted">You had no active voting power when this vote started.</p>}
+              {open && p.power > 0n && <p className="v4-muted">Your voting power: {tokens(p.power, 0)}</p>}
+              {p.state === "Succeeded" && <Button disabled={locked} onClick={() => void transact({ kind: "queueProposal", ...calls(p) })}>Queue for execution</Button>}
+              {p.state === "Queued" && <Button disabled={locked || timestamp < p.eta} onClick={() => void transact({ kind: "executeProposal", ...calls(p) })}>Execute</Button>}
+              <details><summary>Full proposal</summary><p className="v4-pre">{p.description}</p><p className="v4-muted">Proposed by {short(p.proposer)}</p></details>
+            </div>
+          })}
+        </Card>}
+        {gov && <Card title="New treasury proposal">
+          <label>Recipient<input value={proposalTo} placeholder="0x…" onChange={e => setProposalTo(e.target.value)} /></label>
+          <label>Amount (TOKENCAST)<input inputMode="decimal" placeholder="0" value={proposalAmount} onChange={e => setProposalAmount(e.target.value)} /></label>
+          <label>Description<textarea rows={4} maxLength={4000} value={proposalText} placeholder="What the money is for, who receives it and how results will be reported. The first line is the title." onChange={e => setProposalText(e.target.value)} /></label>
+          {proposalWei !== null && proposalWei > 0n && <p className="v4-muted">{proposalWei > gov.treasury.unreserved ? "More than the unreserved treasury."
+            : proposalLarge ? "Above what a simple majority may spend in this period, so it needs two thirds of the votes." : "Within the 5% cap: a simple majority decides."}
+            {" "}Voting starts about {span(gov.votingDelay * BLOCK_SECONDS)} after submission and lasts about {span(gov.votingPeriod * BLOCK_SECONDS)}; then {span(gov.timelockDelay)} of timelock. The cap is checked again at execution.</p>}
+          <p className="v4-muted">{canPropose ? (gov.votes >= gov.threshold ? "You can propose with your active voting power." : "You can propose as the operator of an active node.")
+            : `Proposing needs ${tokens(gov.threshold, 0)} TOKENCAST of active voting power or an active node you operate. You have ${tokens(gov.votes, 0)}. One live proposal per wallet.`}</p>
+          <Button disabled={locked || !canPropose || !proposalValid} onClick={() => void submitProposal()}>Submit proposal</Button>
+        </Card>}
       </>}
     </main>}
     <nav className="v4-nav" aria-label="Main navigation">{[["mine", "Mine", FarcasterIcon], ["network", "Network", Radio], ["token", "Token", Layers], ["dao", "DAO", Vote]].map(([key, label, Icon]) => {

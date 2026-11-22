@@ -72,7 +72,7 @@ if (nodeKey && config.devWallet === account.address) {
 
 console.log(`\n# App (Vercel preview)\nVITE_MINING_PROTOCOL=v4\nVITE_V4_CHAIN_ID=84532\nVITE_V4_RPC_URL=${env.V4_RPC_URL}
 VITE_V4_TOKEN_ADDRESS=${a.TokenCastOpenV4}\nVITE_V4_DISTRIBUTOR_ADDRESS=${a.MineCastOpenDistributorV4}\nVITE_V4_STAKING_ADDRESS=${a.MineCastOpenStakingV4}
-VITE_V4_DAO_ADDRESS=${a.MineCastOpenDaoV4}\nVITE_V4_REGISTRY_ADDRESS=${a.MineCastNodeRegistryV4}
+VITE_V4_DAO_ADDRESS=${a.MineCastOpenDaoV4}\nVITE_V4_REGISTRY_ADDRESS=${a.MineCastNodeRegistryV4}\nVITE_V4_GOVERNOR_ADDRESS=${a.MineCastGovernorV4}
 # Worker\nV4_CHAIN_ID=84532\nV4_DISTRIBUTOR_ADDRESS=${a.MineCastOpenDistributorV4}\nV4_RPC_URL=${env.V4_RPC_URL}
 # Also: governor ${a.MineCastGovernorV4}, timelock ${a.TimelockController}`)
 
