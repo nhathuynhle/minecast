@@ -28,7 +28,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     uint256 public constant CLAIM_WINDOW = 7 days;
     uint256 public constant MAX_MINER_BPS = 100; // base per-wallet daily cap; boost level L raises it by 1 + 0.2L
     uint256 public constant MAX_BATCH = 100;
-    bytes32 public constant POLICY_HASH = keccak256("MineCast.OpenV4.Quorum.8:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h");
+    bytes32 public constant POLICY_HASH = keccak256("MineCast.OpenV4.Quorum.9:premine2100000:decay50bps:cap100bps:floor10000:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h");
     bytes32 public constant REPORT_TYPEHASH = keccak256("DailyReport(uint256 day,bytes32 root,uint256 totalWeight,uint256 allocated,uint256 leafCount,bytes32 sourceHash,bytes32 policyHash)");
 
     struct Report {
@@ -92,6 +92,8 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     mapping(uint64 fid => bool) public inviteCounted;
     struct Announcement { address signer; uint64 blockNumber; }
     mapping(uint256 day => Announcement[]) private _announcements;
+    /// @dev Keys that committed for a day, so nodes can weigh how much stake stands behind each announcement.
+    mapping(uint256 day => address[]) private _committers;
     mapping(uint256 day => mapping(address signer => bool)) public announced;
     mapping(uint256 day => mapping(address signer => bytes32)) public commitments;
 
@@ -197,7 +199,11 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         if (commitment == bytes32(0) || commitments[day][msg.sender] != bytes32(0) || registry.weightAt(msg.sender, day) == 0
             || registry.isSlashed(msg.sender)) revert InvalidSignature();
         commitments[day][msg.sender] = commitment;
+        _committers[day].push(msg.sender);
     }
+
+    function committerCount(uint256 day) external view returns (uint256) { return _committers[day].length; }
+    function committerAt(uint256 day, uint256 index) external view returns (address) { return _committers[day][index]; }
 
     /// @notice Phase 2: a key reveals the report it committed to, once per day, so other nodes can co-sign the
     ///         earliest announcement that matches their own view within tolerance (one follower tier) instead of

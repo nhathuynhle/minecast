@@ -88,7 +88,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     const [, castHash, invites, startedAt, level] = await c.readContract({ ...mining, functionName: 'sessions', args: [day, miner] })
     const bundle = buildOpenReport({ chainId: 84532, distributor: mining.address, day, launchTime: launch,
       sourceHash: await c.readContract({ ...mining, functionName: 'sessionsHash', args: [day] }),
-      entries: [{ fid: 42n, wallet: miner, followers: 2000n, nodeWork: false, castHash, startedAt, level, invites }] })
+      entries: [{ fid: 42n, wallet: miner, followers: 100000n, nodeWork: false, castHash, startedAt, level, invites }] }) // x100: 1% under the floor
     const close = launch + (day + 1n) * DAY
     if ((await c.getBlock()).timestamp < close) await at(close) // phase 1 at the 00:00 UTC close: the node commits
     await c.setBalance({ address: key.address, value: parseEther('1') })

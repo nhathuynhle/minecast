@@ -1,6 +1,7 @@
 // Base Sepolia rehearsal: sign and send the Open V4 plan, finalize, verify, then bond the first node.
 //   $env:V4_RPC_URL = "https://sepolia.base.org"
-//   $env:DEPLOYER_PRIVATE_KEY = "0x..."        # testnet-only wallet with Sepolia ETH; also the dev wallet
+//   $env:DEPLOYER_KEYSTORE = "C:\minecast-keys\deployer.json"   # encrypted key (research/v4/keystore.mjs); asks its password
+//   # or $env:DEPLOYER_PRIVATE_KEY = "0x..."  # plain key, testnet only; the deployer is also the dev wallet
 //   $env:NODE_SIGNING_ADDRESS = "0x..."        # address of the worker's NODE_SIGNING_KEY (a different key)
 //   node research/v4/deploy-open.mjs            # deploy (launch = next 00:00 UTC unless V4_LAUNCH_TIME is set)
 //   node research/v4/deploy-open.mjs activate   # 7 days later: activate the node
@@ -11,6 +12,7 @@ import { createWalletClient, encodeFunctionData, getAddress, http, parseAbi, pub
 import { privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
 import { packageOpen } from './package-open.mjs'
+import { keystoreAccount } from './keystore.mjs'
 import { prepareDeployment } from './prepare-open-deployment.mjs'
 import { verifyDeployment } from './verify-open-deployment.mjs'
 
@@ -21,8 +23,8 @@ const registryAbi = parseAbi(['function registerNode(address signingKey, uint256
   'function nodes(address) view returns (address operator, uint64 readyAt, uint64 startDay, uint64 endDay, uint208 weight, bool activated, bool slashed, bool withdrawn)'])
 const tokenAbi = parseAbi(['function approve(address spender, uint256 amount) returns (bool)'])
 
-if (!env.V4_RPC_URL || !env.DEPLOYER_PRIVATE_KEY) throw Error('Set V4_RPC_URL and DEPLOYER_PRIVATE_KEY')
-const account = privateKeyToAccount(env.DEPLOYER_PRIVATE_KEY.trim())
+if (!env.V4_RPC_URL || !(env.DEPLOYER_KEYSTORE || env.DEPLOYER_PRIVATE_KEY)) throw Error('Set V4_RPC_URL and DEPLOYER_KEYSTORE (or DEPLOYER_PRIVATE_KEY)')
+const account = env.DEPLOYER_KEYSTORE ? await keystoreAccount(env.DEPLOYER_KEYSTORE) : privateKeyToAccount(env.DEPLOYER_PRIVATE_KEY.trim())
 const client = createWalletClient({ account, chain: baseSepolia, transport: http(env.V4_RPC_URL) }).extend(publicActions)
 if (await client.getChainId() !== baseSepolia.id) throw Error('RPC is not Base Sepolia (84532)')
 const nodeKey = env.NODE_SIGNING_ADDRESS && getAddress(env.NODE_SIGNING_ADDRESS.trim())

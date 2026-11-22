@@ -1,6 +1,6 @@
 import { getAddress, isAddress, keccak256, toHex, zeroAddress, type Address } from "viem"
 
-export const V4_POLICY_HASH = keccak256(toHex("MineCast.OpenV4.Quorum.8:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h"))
+export const V4_POLICY_HASH = keccak256(toHex("MineCast.OpenV4.Quorum.9:premine2100000:decay50bps:cap100bps:floor10000:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h"))
 export type V4Config = { chainId: 8453 | 84532; token: Address; distributor: Address; staking: Address; dao: Address; registry: Address; governor?: Address }
 export type ConfigResult = { config: V4Config; error: null } | { config: null; error: string }
 export function parseV4Config(env: Record<string, string | undefined>): ConfigResult {

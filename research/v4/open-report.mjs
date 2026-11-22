@@ -3,7 +3,7 @@ import { encodeAbiParameters, hashTypedData, keccak256, concatHex, toHex, zeroHa
 import { followerWeight } from './allocation.mjs'
 import { miningPoolForDay } from './node/bootstrap-model.mjs'
 
-export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.8:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h'))
+export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.9:premine2100000:decay50bps:cap100bps:floor10000:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h'))
 export const types = { DailyReport: [
   { name: 'day', type: 'uint256' }, { name: 'root', type: 'bytes32' },
   { name: 'totalWeight', type: 'uint256' }, { name: 'allocated', type: 'uint256' },
@@ -14,6 +14,8 @@ export function typedReport(chainId, distributor, report) {
     types, primaryType: 'DailyReport', message: { ...report, policyHash: POLICY_HASH } }
 }
 export function openDigest(chainId, distributor, report) { return hashTypedData(typedReport(chainId, distributor, report)) }
+// While total weight is below 10,000 base units, one unit earns at most pool / 10,000; the rest is surplus.
+export const MIN_TOTAL_WEIGHT = 500_000n
 // Weights are in fiftieths: min(min(tier × node 5 × (1 + 0.1 × invites), 100) × (1 + 0.2 × level), 200) × 50.
 export function weightOf(entry) {
   const base = followerWeight(Number(entry.followers)) * (entry.nodeWork ? 5n : 1n) * (10n + BigInt(Math.min(entry.invites ?? 0, 10)))
@@ -64,7 +66,7 @@ export function buildOpenReport({ chainId, distributor, day, launchTime, entries
   }).sort((a, b) => a.fid < b.fid ? -1 : 1)
   const totalWeight = canonical.reduce((sum, e) => sum + weightOf(e), 0n)
   const amounts = canonical.map(e => {
-    const proportional = pool * weightOf(e) / totalWeight, cap = pool * (5n + BigInt(e.level)) / 500n
+    const proportional = pool * weightOf(e) / (totalWeight > MIN_TOTAL_WEIGHT ? totalWeight : MIN_TOTAL_WEIGHT), cap = pool * (5n + BigInt(e.level)) / 500n
     return proportional < cap ? proportional : cap
   })
   const leaves = canonical.map((e, i) => openLeaf(chainId, distributor, day, i, e, amounts[i]))

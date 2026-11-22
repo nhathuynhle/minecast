@@ -14,6 +14,7 @@ import { verifyDeployment } from './verify-open-deployment.mjs'
 import { buildOpenReport, openDigest, typedReport, weightOf } from './open-report.mjs'
 import { miningPoolForDay, lifetimeCeilingAfterDays, MAX_SUPPLY, DEV_PREMINE } from './node/bootstrap-model.mjs'
 import { commitmentOf, processDay, runPass } from './node/open-worker.mjs'
+import { keep } from './node/keeper.mjs'
 import { buildProposal } from './governance.mjs'
 
 const DAY = 86400n, HOUR = 3600n, COMMIT = 1800n, REVIEW = HOUR, launch = 1893456000n, unit = parseEther('1'), minBond = parseEther('1000000')
@@ -138,8 +139,9 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     await at(await now() + REVIEW)
     await send(mining, 'activateDay', [bundle.report.day], outsider)
   }
+  // 100k followers is the x100 base: exactly 1% of the pool each under the 10,000-unit total-weight floor.
   async function initialClaims(r) {
-    r ??= await report(); await activate(r)
+    r ??= await report(0n, await mineDay(0n, [[1, alice, 100000n], [2, bob, 100000n]])); await activate(r)
     await send(mining, 'claim', [r.report.day], alice); await send(mining, 'claim', [r.report.day], bob)
     return r
   }
@@ -305,10 +307,10 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(token, 'cumulativeMinted'), DEV_PREMINE)
   })
 
-  await scenario('cap excess goes 5/95; unclaimed allocations never go to treasury', async () => {
+  await scenario('total-weight floor and cap excess go 5/95; unclaimed allocations never go to treasury', async () => {
     const r = await report(); await activate(r)
     const pool = miningPoolForDay(0), surplus = pool - r.report.allocated
-    assert.equal(r.amounts[0], pool / 100n)
+    assert.equal(r.amounts[0], pool * 500n / 500000n) // two x10 miners: each unit earns pool / 10,000, not half the pool
     assert.equal(await read(staking, 'scheduledRewards', [1n]), surplus * 5n / 100n)
     assert.equal(await read(token, 'balanceOf', [dao.address]), surplus - surplus * 5n / 100n)
     const minted = await read(token, 'cumulativeMinted')
@@ -350,6 +352,49 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     const next = await report(future)
     await reveal(next, [keys[1], keys[2]]); await submit(next, [keys[1], keys[2]])
     assert.ok((await read(mining, 'certificate', [openDigest(31337, mining.address, next.report)]))[1] > 0n)
+  })
+
+  await scenario('keeper: opens claims others certified, closes the month, runs the DAO vote and epoch, ejects a silent key', async () => {
+    const r = await report(); await certify(r) // certified and published, claims not opened yet
+    await c.setBalance({ address: keys[1].address, value: parseEther('10') }) // any funded key keeps the protocol moving
+    const ctx = { client: c, account: keys[1], distributor: mining.address, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-keeper-')) }
+    assert.deepEqual(await keep(ctx, launch, await now()), []) // still under review: nothing is due
+    await at(await now() + REVIEW)
+    assert.deepEqual(await keep(ctx, launch, await now()), ['activateDay(0)'])
+    await send(mining, 'claim', [0n], alice) // January's mining sets the February round budget
+    const february = launch + 31n * DAY
+    await at(february + 16n * DAY + HOUR) // 17 February: January's claims are final
+    const done = await keep(ctx, launch, await now())
+    for (const line of ['finalizeMonth(' + february + ')', 'openMonthlyVote()', 'finalizeEpoch(0)', 'ejectInactive(' + keys[0].address + ')']) assert.ok(done.includes(line), line)
+    assert.equal(await read(mining, 'monthFinalized', [203001n]), true)
+    await at(await now() + 7n * DAY) // nobody voted: the burn round settles as rejected
+    assert.deepEqual(await keep(ctx, launch, await now()), ['settle(203002)'])
+    assert.deepEqual(await keep(ctx, launch, await now()), []) // idempotent
+  })
+
+  await scenario('H-1: an early hostile announcement within tolerance cannot capture honest nodes', async () => {
+    await initialClaims()
+    await bond(keys[1], alice); await bond(keys[2], bob); await bond(keys[3]) // honest 3M (keys 0, 2, 3) vs hostile 1M
+    await at(launch + 12n * DAY)
+    for (const k of keys.slice(1)) await send(registry, 'activateNode', [k.address])
+    const day = 13n, entries = await mineDay(day)
+    const honest = await report(day, entries), hostile = await report(day, [{ ...entries[0], followers: 5000n }, entries[1]]) // one tier up
+    const input = { day, launchTime: launch, entries, sourceHash: await read(mining, 'sessionsHash', [day]) }
+    const ctx = { client: c, account: keys[0], distributor: mining.address, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-journal-')), collect: async () => input }
+    await c.setBalance({ address: keys[0].address, value: parseEther('10') })
+    const close = launch + (day + 1n) * DAY
+    await at(close)
+    assert.match(await processDay(ctx, day, launch, await now()), /committed/)
+    await commit(hostile, keys[1]); await commit(honest, keys[2]); await commit(honest, keys[3])
+    await at(close + COMMIT)
+    await send(mining, 'announceReport', [day, hostile.report, hostile.entries], keys[1]) // the hostile key reveals first
+    assert.equal(await read(mining, 'committerCount', [day]), 4n)
+    assert.equal(await processDay(ctx, day, launch, await now()), 'waiting for quorum')
+    const honestDigest = openDigest(31337, mining.address, honest.report), hostileDigest = openDigest(31337, mining.address, hostile.report)
+    assert.equal(await read(mining, 'hasSigned', [honestDigest, keys[0].address]), true) // revealed its own: 3M committed behind it
+    assert.equal(await read(mining, 'hasSigned', [hostileDigest, keys[0].address]), false)
+    await submit(honest, [keys[2], keys[3]])
+    assert.equal((await read(mining, 'dayInfo', [day])).digest, honestDigest)
   })
 
   await scenario('a key that alone holds the quorum certifies without a commitment; double-signing contests the day and burns its bond', async () => {
@@ -627,7 +672,7 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(token, 'cumulativeMinted'), minted) // burns never reopen the mint cap
     await denied(token, 'buyBoostLevel', [], alice, 'BoostLocked') // level 2 opens at 20%
     assert.equal(before.level, 0)
-    const day22 = await mineDay(22n)
+    const day22 = await mineDay(22n, [[1, alice, 100000n], [2, bob, 100000n]]) // x100 base: the caps bind
     assert.deepEqual(day22.map(e => e.level), [1, 0])
     const r = await report(22n, day22)
     // A quorum cannot grant a level the session did not have when it opened.

@@ -19,6 +19,7 @@ import { FOLLOWER_TIERS } from '../allocation.mjs'
 import { miningPoolForDay } from './bootstrap-model.mjs'
 import { buildOpenReport, openDigest, typedReport } from '../open-report.mjs'
 import { FARCASTER_EPOCH, castById, followersOf, hasVerifiedWallet, lastFidRegisteredBy } from './farcaster-source.mjs'
+import { keep } from './keeper.mjs'
 
 const DAY = 86400n, HOUR = 3600n, COMMIT_WINDOW = 1800n, REVIEW_PERIOD = HOUR
 const CONCURRENCY = 8 // parallel Snapchain/RPC reads; hosted APIs allow ~10 requests per second per endpoint
@@ -56,6 +57,8 @@ const abi = parseAbi([
   'function announceReport(uint256 day, Report r, Entry[] entries)',
   'function commitReport(uint256 day, bytes32 commitment)',
   'function commitments(uint256 day, address signer) view returns (bytes32)',
+  'function committerCount(uint256 day) view returns (uint256)',
+  'function committerAt(uint256 day, uint256 index) view returns (address)',
   'function certifiedSigner(uint256 day, address signingKey) view returns (bool)',
   'function proveCertifiedSignature(uint256 day, address signingKey)',
   'function nodes(address) view returns (address operator, uint64 readyAt, uint64 startDay, uint64 endDay, uint208 weight, bool activated, bool slashed, bool withdrawn)',
@@ -218,13 +221,30 @@ export function withinTolerance(mine, theirs) {
   })
 }
 
-/** Entries of the earliest announcement this node can co-sign, or null to announce its own. */
-export function pickAnnouncement(input, announcements, chainId, distributor) {
+/** Entries of the announcement this node should co-sign, or null to reveal its own report.
+ *  Certification needs >1/3 of the stake committed to the exact report, so among the announcements within
+ *  tolerance the one with the most committed stake wins (ties: earliest). Our own committed report wins when
+ *  more stake committed to it, so an early hostile or one-tier-off announcement cannot capture honest nodes. */
+export function pickAnnouncement(input, announcements, chainId, distributor, committed = [], ownDigest = null) {
+  const stake = digest => committed.reduce((sum, c) => c.commitment === commitmentOf(digest, c.key) ? sum + c.weight : sum, 0n)
+  let best = null, bestStake = -1n
   for (const entries of announcements) {
     if (!withinTolerance(input.entries, entries)) continue
-    try { buildOpenReport({ chainId, distributor, ...input, entries }); return entries } catch { /* malformed: skip */ }
+    let digest
+    try { digest = openDigest(chainId, distributor, buildOpenReport({ chainId, distributor, ...input, entries }).report) } catch { continue } // malformed
+    const s = stake(digest)
+    if (s > bestStake) { best = entries; bestStake = s }
   }
-  return null
+  return ownDigest && stake(ownDigest) > bestStake ? null : best
+}
+
+async function committedStakes(read, registry, day) {
+  const list = []
+  for (let i = 0n, count = await read('committerCount', [day]); i < count; i++) {
+    const key = await read('committerAt', [day, i])
+    list.push({ key, commitment: await read('commitments', [day, key]), weight: await read('weightAt', [key, day], registry) })
+  }
+  return list
 }
 
 async function announcementsOf(client, read, distributor, day) {
@@ -305,9 +325,10 @@ export async function processDay({ client, account, distributor, dir, collect },
     const committed = fs.existsSync(commitFile) ? JSON.parse(fs.readFileSync(commitFile, 'utf8')) : null
     const own = committed ? { ...committed.input, day: BigInt(committed.input.day), launchTime: BigInt(committed.input.launchTime) }
       : await collect(day, launchTime, distributor)
-    const adopted = pickAnnouncement(own, await announcementsOf(client, read, distributor, day), chainId, distributor)
     const canReveal = committed && !(await read('announced', [day, account.address]))
       && await read('commitments', [day, account.address]) === commitmentOf(committed.digest, account.address)
+    const adopted = pickAnnouncement(own, await announcementsOf(client, read, distributor, day), chainId, distributor,
+      await committedStakes(read, await read('registry'), day), canReveal ? committed.digest : null)
     // A key that alone holds the quorum may certify without a commitment: it signs its own report late, unannounced.
     if (!adopted && !canReveal && !(await holdsQuorum(read, account.address, day))) return 'missed the commit phase; waiting for an announcement to co-sign'
     mine = await saveSigned(file, account, chainId, distributor, adopted ? { ...own, entries: adopted } : own, read,
@@ -354,6 +375,13 @@ export async function runPass(ctx) {
     try { console.log(`day ${day}: ${await processDay({ ...ctx, distributor: await tokenRead('distributorForDay', [day]) }, day, launchTime, now)}`) }
     catch (error) { process.exitCode = 1; console.error(`day ${day}: ${error.shortMessage ?? error.message}`) }
   }
+  // Upkeep at most every ~10 minutes, even while cron runs the worker every minute around the close.
+  const stamp = ctx.keeper && path.join(ctx.dir, 'keeper-last-run')
+  if (stamp && now >= (fs.existsSync(stamp) ? BigInt(fs.readFileSync(stamp, 'utf8')) : 0n) + 540n) {
+    fs.writeFileSync(stamp, String(now))
+    try { for (const line of await keep({ ...ctx, distributor: await tokenRead('distributorForDay', [today]) }, launchTime, now)) console.log('keeper: ' + line) }
+    catch (error) { process.exitCode = 1; console.error(`keeper: ${error.shortMessage ?? error.message}`) }
+  }
   if (now < launchTime || !ctx.prewarm) return
   try {
     const warmed = await ctx.prewarm(await tokenRead('distributorForDay', [today]), today, launchTime, now)
@@ -371,7 +399,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   const distributor = getAddress(env('V4_DISTRIBUTOR_ADDRESS')), dir = env('NODE_JOURNAL_DIR')
   fs.mkdirSync(dir, { recursive: true })
   const cacheDir = distributor => path.join(dir, 'tier-cache', distributor.toLowerCase())
-  await runPass({ client, account, distributor, dir,
+  await runPass({ client, account, distributor, dir, keeper: true,
     collect: (day, launchTime, distributor) => collect({ client, distributor, day, launchTime, cacheDir: cacheDir(distributor) }),
     // Only a key bonded for the open cohort will report it, so only then spend Snapchain reads ahead of time.
     prewarm: async (distributor, day, launchTime, now) => {

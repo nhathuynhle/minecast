@@ -1,6 +1,7 @@
 // Stake governance from the command line. Every call goes straight to MineCastGovernorV4; no backend.
 //   $env:V4_RPC_URL = "https://sepolia.base.org"; $env:V4_CHAIN_ID = "84532"
-//   $env:V4_GOVERNOR_ADDRESS = "0x..."; $env:PRIVATE_KEY = "0x..."   # your own wallet
+//   $env:V4_GOVERNOR_ADDRESS = "0x..."; $env:KEYSTORE = "C:\minecast-keys\me.json"   # your wallet, encrypted
+//   (or $env:PRIVATE_KEY = "0x..."; keystore files come from research/v4/keystore.mjs)
 //   node research/v4/governance.mjs propose proposal.json [nodeSigningKey]   # node operators pass their key
 //   node research/v4/governance.mjs status|queue|execute proposal.json
 //   node research/v4/governance.mjs vote proposal.json for|against|abstain
@@ -17,6 +18,7 @@ import { pathToFileURL } from 'node:url'
 import { createWalletClient, encodeFunctionData, getAddress, http, keccak256, parseAbi, parseAbiItem, parseEther, publicActions, toHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base, baseSepolia } from 'viem/chains'
+import { keystoreAccount } from './keystore.mjs'
 
 const governorAbi = parseAbi([
   'function dao() view returns (address)', 'function registry() view returns (address)', 'function token() view returns (address)',
@@ -69,13 +71,14 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   const env = name => { if (!process.env[name]) throw Error('Set ' + name); return process.env[name] }
   const chain = { 8453: base, 84532: baseSepolia }[Number(process.env.V4_CHAIN_ID ?? 84532)]
   if (!chain) throw Error('V4_CHAIN_ID must be 8453 or 84532')
-  const account = process.env.PRIVATE_KEY ? privateKeyToAccount(process.env.PRIVATE_KEY.trim()) : undefined
+  const account = process.env.KEYSTORE ? await keystoreAccount(process.env.KEYSTORE)
+    : process.env.PRIVATE_KEY ? privateKeyToAccount(process.env.PRIVATE_KEY.trim()) : undefined
   const client = createWalletClient({ account, chain, transport: http(env('V4_RPC_URL')) }).extend(publicActions)
   if (await client.getChainId() !== chain.id) throw Error('V4_RPC_URL is on another chain')
   const governor = getAddress(env('V4_GOVERNOR_ADDRESS'))
   const read = (functionName, args, address = governor, abi = governorAbi) => client.readContract({ address, abi, functionName, args })
   async function send(functionName, args, address = governor, abi = governorAbi) {
-    if (!account) throw Error('Set PRIVATE_KEY to send transactions')
+    if (!account) throw Error('Set KEYSTORE (or PRIVATE_KEY) to send transactions')
     const hash = await client.writeContract({ address, abi, functionName, args, account })
     const receipt = await client.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw Error(functionName + ' reverted: ' + hash)

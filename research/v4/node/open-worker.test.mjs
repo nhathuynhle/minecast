@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { zeroAddress, zeroHash } from 'viem'
 import { collect, commitmentOf, pickAnnouncement, prewarm, withinTolerance } from './open-worker.mjs'
+import { buildOpenReport, openDigest } from '../open-report.mjs'
 
 const network = 'FARCASTER_NETWORK_MAINNET', distributor = '0x' + 'd1'.repeat(20), token = '0x' + 'a0'.repeat(20)
 const launch = 1893456000n, day1 = launch + 86400n, at = day1 + 3600n, ft = unix => Number(unix) - 1609459200
@@ -105,4 +106,22 @@ test('a node co-signs the earliest announcement within one follower tier, never 
   assert.deepEqual(picked.map(x => x.followers), [1000, 10])
   assert.equal(withinTolerance([e(1, 10)], [e(1, 500)]), false) // the 100 floor sits between 10 and 500
   assert.equal(pickAnnouncement(input, [[e(1, 5000), e(2, 0)]], 31337, distributor), null)
+})
+
+test('H-1: the announcement with the most committed stake wins, and our own report beats a weaker early one', () => {
+  const e = (n, followers) => ({ fid: BigInt(n), wallet: wallet(n), followers, nodeWork: false, castHash: cast(n),
+    startedAt: at, nodeKey: zeroAddress, level: 0, invites: 0 })
+  const input = { day: 1n, launchTime: launch, entries: [e(1, 500), e(2, 0)], sourceHash: '0x' + '5'.repeat(64) }
+  const digestOf = entries => openDigest(31337, distributor, buildOpenReport({ chainId: 31337, distributor, ...input, entries }).report)
+  const hostile = [e(1, 1000), e(2, 10)], honest = [e(1, 500), e(2, 0)], [k1, k2, k3] = [wallet(91), wallet(92), wallet(93)]
+  const committed = [{ key: k1, commitment: commitmentOf(digestOf(hostile), k1), weight: 10n },
+    { key: k2, commitment: commitmentOf(digestOf(honest), k2), weight: 30n }, { key: k3, commitment: commitmentOf(digestOf(honest), k3), weight: 30n }]
+  // The hostile key announced first; the honest one (60 committed) later: co-sign the honest one.
+  assert.deepEqual(pickAnnouncement(input, [hostile, honest], 31337, distributor, committed), honest)
+  // Only the hostile one is announced yet, but our own committed report has more stake: reveal ours (null).
+  assert.equal(pickAnnouncement(input, [hostile], 31337, distributor, committed, digestOf(honest)), null)
+  // Our own report with less stake than an announcement within tolerance: co-sign the announcement.
+  assert.deepEqual(pickAnnouncement(input, [hostile], 31337, distributor, committed.slice(0, 1), digestOf(honest)), hostile)
+  // A commitment of one key never counts for another key's report.
+  assert.deepEqual(pickAnnouncement(input, [hostile, honest], 31337, distributor, [{ ...committed[1], key: k1 }]), hostile)
 })

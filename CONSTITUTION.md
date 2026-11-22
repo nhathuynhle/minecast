@@ -59,7 +59,7 @@ A rule change should start on the first day of a month at least 4 weeks after su
 
 ## 6. Treasury and monthly rounds
 
-- Mining surplus goes 5% to stakers and 95% to the DAO treasury.
+- Mining surplus goes 5% to stakers and 95% to the DAO treasury. Rewards are shared as if at least 10,000 weight units mined each day (one unit earns at most 0.01% of the day's pool), so while few miners mine, the unshared part is surplus too.
 - The treasury has no owner key. Only the governance timelock can spend from it. A simple majority can spend at most 5% of the unreserved treasury in each 30-day period; anything above that needs two thirds.
 - Each month stakers vote on a fixed action: odd months an airdrop to the previous month's miners, even months a burn.
 - An airdrop share is paid only to miners who had at least one third of that month's mining staked when the round opened. Unclaimed and ineligible shares return to the treasury after 90 days.

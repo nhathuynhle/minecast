@@ -1,0 +1,82 @@
+// Keeper: the permissionless upkeep no one owns. Every node runs it at the end of each worker pass, so the
+// protocol keeps moving without the founder. Each candidate call is simulated first; the contracts themselves
+// decide whether it is due, and a call that would revert is simply not sent. Gas comes from the node key.
+//   closing months, opening and settling the monthly DAO vote, releasing expired airdrops,
+//   finalizing and sweeping staking epochs, opening claims for days certified by other nodes,
+//   ejecting keys that went silent (found from registry Activated logs, scanned incrementally).
+import fs from 'node:fs'
+import path from 'node:path'
+import { parseAbi } from 'viem'
+
+const DAY = 86400n
+const abi = parseAbi([
+  'function registry() view returns (address)',
+  'function staking() view returns (address)',
+  'function treasury() view returns (address)',
+  'function finalizeMonth(uint256 nextMonthStart)',
+  'function activateDay(uint256 day)',
+  'function openMonthlyVote() returns (uint256)',
+  'function settle(uint256 month)',
+  'function releaseExpiredAirdrop(uint256 month)',
+  'function nextEpochToFinalize() view returns (uint256)',
+  'function currentEpoch() view returns (uint256)',
+  'function finalizeEpoch(uint256 epoch)',
+  'function sweepUnclaimed(uint256 epoch)',
+  'function ejectInactive(address signingKey)',
+  'event Activated(address indexed signingKey, uint256 indexed startDay, uint256 weight)',
+])
+
+/** First second of the UTC month `back` months before the one holding `now`, and its yyyymm id. */
+function month(now, back) {
+  const d = new Date(Number(now) * 1000), start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1) / 1000
+  const m = new Date(start * 1000)
+  return { start: BigInt(start), id: BigInt(m.getUTCFullYear() * 100 + m.getUTCMonth() + 1) }
+}
+
+/** Every key ever activated, from Activated logs; the scan resumes where it stopped (bounded work per pass). */
+async function activatedKeys(client, registry, dir, launchTime, head) {
+  const file = path.join(dir, `keeper-${registry.toLowerCase()}.json`)
+  const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
+  // Base makes a block every 2 s; a key activates at least 7 days after it registers, never long before launch.
+  const latest = await client.getBlock({ blockNumber: head })
+  const guess = head - (latest.timestamp - (launchTime > 8n * DAY ? launchTime - 8n * DAY : 0n)) / 2n
+  let from = state ? BigInt(state.from) : guess > 0n ? guess : 0n
+  const keys = new Set(state?.keys ?? [])
+  for (let i = 0; i < 50 && from <= head; i++) {
+    const to = from + 1999n < head ? from + 1999n : head
+    for (const log of await client.getContractEvents({ address: registry, abi, eventName: 'Activated', fromBlock: from, toBlock: to })) keys.add(log.args.signingKey)
+    from = to + 1n
+  }
+  fs.writeFileSync(file, JSON.stringify({ from: String(from), keys: [...keys] }))
+  return [...keys]
+}
+
+export async function keep({ client, account, distributor, dir }, launchTime, now) {
+  const done = []
+  async function attempt(address, functionName, args = []) {
+    let request
+    try { ({ request } = await client.simulateContract({ address, abi, functionName, args, account })) }
+    catch (error) {
+      if (!error.walk?.(e => e.name === 'ContractFunctionRevertedError')) throw error // RPC trouble, not "not due yet"
+      return
+    }
+    const receipt = await client.waitForTransactionReceipt({ hash: await client.writeContract(request) })
+    if (receipt.status !== 'success') throw Error(functionName + ' reverted')
+    done.push(`${functionName}(${args.join(', ')})`)
+  }
+  const read = (address, functionName, args) => client.readContract({ address, abi, functionName, args })
+  const [registry, staking, dao] = await Promise.all(['registry', 'staking', 'treasury'].map(name => read(distributor, name)))
+  const today = now < launchTime ? 0n : (now - launchTime) / DAY
+
+  // Days certified and published by other nodes: open their claims once the review is over.
+  for (let day = today > 8n ? today - 8n : 0n; day < today; day++) await attempt(distributor, 'activateDay', [day])
+  for (const back of [1, 0]) await attempt(distributor, 'finalizeMonth', [month(now, back).start])
+  await attempt(dao, 'openMonthlyVote')
+  for (const back of [1, 0]) await attempt(dao, 'settle', [month(now, back).id])
+  for (const back of [5, 4, 3]) await attempt(dao, 'releaseExpiredAirdrop', [month(now, back).id])
+  await attempt(staking, 'finalizeEpoch', [await read(staking, 'nextEpochToFinalize')])
+  const epoch = await read(staking, 'currentEpoch')
+  for (const back of [5n, 4n]) if (epoch >= back) await attempt(staking, 'sweepUnclaimed', [epoch - back])
+  for (const key of await activatedKeys(client, registry, dir, launchTime, await client.getBlockNumber())) await attempt(registry, 'ejectInactive', [key])
+  return done
+}

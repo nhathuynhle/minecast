@@ -30,6 +30,8 @@ export function estimateV4Reward(pool: bigint, stats: V4LiveStats, minerWeight?:
   if (stats.totalWeight < weight || stats.totalWeight === 0n) return null
   const boost = BigInt(5 + level), tenths = weight * BigInt(10 + Math.min(invites, 10))
   const boosted = (tenths > 1000n ? 1000n : tenths) * boost
-  const proportion = pool * (boosted > 10000n ? 10000n : boosted) / (stats.totalWeight * 50n), cap = pool * boost / 500n
+  // Total-weight floor: below 10,000 base units the pool is not fully shared out.
+  const floored = stats.totalWeight > 10000n ? stats.totalWeight : 10000n
+  const proportion = pool * (boosted > 10000n ? 10000n : boosted) / (floored * 50n), cap = pool * boost / 500n
   return proportion < cap ? proportion : cap
 }
