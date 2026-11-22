@@ -16,7 +16,7 @@ import { miningPoolForDay, lifetimeCeilingAfterDays, MAX_SUPPLY, DEV_PREMINE } f
 import { commitmentOf, processDay } from './node/open-worker.mjs'
 import { buildProposal } from './governance.mjs'
 
-const DAY = 86400n, HOUR = 3600n, launch = 1893456000n, unit = parseEther('1'), minBond = parseEther('1000000')
+const DAY = 86400n, HOUR = 3600n, COMMIT = 1800n, REVIEW = HOUR, launch = 1893456000n, unit = parseEther('1'), minBond = parseEther('1000000')
 const hash = text => keccak256(toHex(text))
 async function startChain(t) {
   const child = spawn(process.env.ANVIL_BIN || 'anvil', ['--host', '127.0.0.1', '--port', '0',
@@ -97,8 +97,6 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     if (await now() < start) await at(start)
     const entries = []
     for (const [fid, wallet, followers = 2000n, nodeKey = zeroAddress, castHash = castOf(fid, day)] of specs) {
-      const last = await read(mining, 'lastSessionStart', [wallet])
-      if (last !== 0n && await now() < last + DAY) await at(last + DAY)
       await send(mining, 'startMining', [BigInt(fid), castHash], wallet)
       const [, , startedAt, level] = await read(mining, 'sessions', [day, wallet])
       entries.push({ fid: BigInt(fid), wallet, followers, nodeWork: nodeKey !== zeroAddress, castHash, startedAt, nodeKey, level })
@@ -121,11 +119,11 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   }
   // Phase 1 of the report's day: the given keys commit to it, then time moves to the start of phase 2.
   async function reveal(bundle, signers = [keys[0]]) {
-    const open = launch + (bundle.report.day + 2n) * DAY + 6n * HOUR
-    if (await now() >= open + 6n * HOUR) throw Error('commit phase of day ' + bundle.report.day + ' is over')
+    const open = launch + (bundle.report.day + 1n) * DAY // the cohort close
+    if (await now() >= open + COMMIT) throw Error('commit phase of day ' + bundle.report.day + ' is over')
     if (await now() < open) await at(open)
     for (const k of signers) await commit(bundle, k)
-    await at(open + 6n * HOUR)
+    await at(open + COMMIT)
   }
   async function certify(bundle, signers = [keys[0]]) {
     await reveal(bundle, signers)
@@ -136,7 +134,7 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   }
   async function activate(bundle, signers = [keys[0]]) {
     await certify(bundle, signers)
-    await at(await now() + 2n * DAY)
+    await at(await now() + REVIEW)
     await send(mining, 'activateDay', [bundle.report.day], outsider)
   }
   async function initialClaims(r) {
@@ -212,15 +210,16 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.deepEqual(await read(registry, 'keysOf', [admin]), [keys[0].address, keys[1].address])
   })
 
-  await scenario('sessions are opened onchain: one per wallet per 24h, reports bound to the exact list', async () => {
+  await scenario('sessions are opened onchain: one per wallet per UTC day, reports bound to the exact list', async () => {
     await denied(mining, 'startMining', [1n, castOf(1, 0n)], alice, 'InvalidSession')
     const [a] = await mineDay(0n, [[1, alice]])
     await denied(mining, 'startMining', [5n, castOf(5, 0n)], alice, 'InvalidSession')
     await denied(mining, 'startMining', [0n, castOf(9, 0n)], bob, 'InvalidSession')
     await denied(mining, 'startMining', [9n, toHex(0n, { size: 20 })], bob, 'InvalidSession')
     assert.equal(await read(mining, 'sessionCount', [0n]), 1n); same(await read(mining, 'sessionWallet', [0n, 0n]), alice)
-    await at(a.startedAt + DAY - 1n); await denied(mining, 'startMining', [1n, castOf(1, 1n)], alice, 'InvalidSession')
-    await at(a.startedAt + DAY); await send(mining, 'startMining', [1n, castOf(1, 1n)], alice)
+    await at(launch + DAY - 1n); await denied(mining, 'startMining', [1n, castOf(1, 1n)], alice, 'InvalidSession') // same cohort
+    await at(launch + DAY); await send(mining, 'startMining', [1n, castOf(1, 1n)], alice) // the next cohort opens at 00:00 UTC
+    assert.equal((await read(mining, 'sessions', [1n, alice]))[2], launch + DAY)
     const fake = { ...a, fid: 2n, wallet: carol, castHash: castOf(2, 0n) } // no onchain session behind it
     const bad = await report(0n, [a], hash('not the session list')), r = await report(0n, [a, fake])
     await reveal(r)
@@ -266,22 +265,22 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     const ctx = { client: c, account: keys[0], distributor: mining.address,
       dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-journal-')), collect: async () => input }
     await c.setBalance({ address: keys[0].address, value: parseEther('10') })
-    await at(launch + 2n * DAY + 6n * HOUR - 1n)
+    await at(launch + DAY - 1n) // the cohort is still open
     assert.match(await processDay(ctx, 0n, launch, await now()), /not signing/)
-    await at(launch + 2n * DAY + 6n * HOUR) // phase 1: commit only, nothing visible to peers yet
+    await at(launch + DAY) // 00:00 UTC close, phase 1: commit only, nothing visible to peers yet
     const wrongBuild = { ...ctx, client: { ...c, chain: { ...c.chain, id: 8453 } } } // digest the distributor would reject
     await assert.rejects(processDay(wrongBuild, 0n, launch, await now()), /does not match the deployed TokenCast V4/)
     assert.deepEqual(fs.readdirSync(ctx.dir), [])
     assert.match(await processDay(ctx, 0n, launch, await now()), /committed/)
     assert.notEqual(await read(mining, 'commitments', [0n, keys[0].address]), zeroHash)
     assert.equal(await read(mining, 'announcementCount', [0n]), 0n)
-    await at(launch + 2n * DAY + 12n * HOUR) // phase 2: reveal the committed report, sign, relay
+    await at(launch + DAY + COMMIT) // phase 2 after 30 minutes: reveal the committed report, sign, relay
     assert.equal(await processDay(ctx, 0n, launch, await now()), 'waiting for review')
     assert.equal(await read(mining, 'announcementCount', [0n]), 1n) // published before signing, for peers to adopt
     assert.equal(await read(registry, 'certifiedSigner', [0n, keys[0].address]), true)
     assert.equal((await read(mining, 'dayInfo', [0n])).published, 2n)
     ctx.collect = async () => { throw Error('a signed day must come from the journal, never be re-collected') }
-    await at(await now() + 2n * DAY)
+    await at(await now() + REVIEW) // claims open about 1.5 hours after the close
     assert.equal(await processDay(ctx, 0n, launch, await now()), 'activated')
     assert.equal(await processDay(ctx, 0n, launch, await now()), 'claims open')
     await send(mining, 'claim', [0n], alice)
@@ -322,7 +321,7 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   })
 
   await scenario('expired result window prevents late minting or backfilled certificates', async () => {
-    const r = await report(); await at(launch + 7n * DAY)
+    const r = await report(); await at(launch + DAY + 8n * DAY - REVIEW) // no time left for a review before day 0's deadline
     await assert.rejects(submit(r), /InvalidPhase/)
     await denied(mining, 'publishAllocations', [0n, r.entries, r.proofs], admin, 'InvalidPhase')
   })
@@ -347,18 +346,17 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.ok((await read(mining, 'certificate', [openDigest(31337, mining.address, next.report)]))[1] > 0n)
   })
 
-  await scenario('one commitment per key: a second report cannot certify; double-sign evidence burns actual bond', async () => {
+  await scenario('a key that alone holds the quorum certifies without a commitment; double-signing contests the day and burns its bond', async () => {
     const a = await report(), b = await report(0n, [a.entries[0]])
     await reveal(a); await submit(a); await submit(b)
     const digestB = openDigest(31337, mining.address, b.report)
-    assert.equal((await read(mining, 'certificate', [digestB]))[1], 0n) // full stake signed b, none committed to it
-    assert.equal((await read(mining, 'dayInfo', [0n])).contested, false)
+    assert.ok((await read(mining, 'certificate', [digestB]))[1] > 0n) // nobody can outvote it, so no commitment is needed
+    assert.equal(await read(mining, 'committedWeight', [digestB]), 0n)
+    assert.equal((await read(mining, 'dayInfo', [0n])).contested, true) // two conflicting certificates
     const before = await read(token, 'totalSupply')
     await send(mining, 'proveEquivocation', [keys[0].address, a.report, await sig(keys[0], a.report), b.report, await sig(keys[0], b.report)], outsider)
-    // Quorum lost, not voided: the day waits for unsigned keys (none are left here), and b loses the support too.
-    assert.equal((await read(mining, 'dayInfo', [0n])).contested, false)
     assert.deepEqual(await read(mining, 'certificate', [openDigest(31337, mining.address, a.report)]), [0n, 0n])
-    assert.equal((await read(mining, 'certificate', [digestB]))[0], 0n)
+    assert.deepEqual(await read(mining, 'certificate', [digestB]), [0n, 0n])
     await denied(mining, 'publishAllocations', [0n, a.entries, a.proofs], admin, 'InvalidPhase')
     await denied(registry, 'slashEquivocation', [keys[0].address, 0n], outsider, 'Unauthorized')
     assert.equal(await read(token, 'totalSupply'), before - minBond)
@@ -367,6 +365,19 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(registry, 'totalWeightAt', [3n]), 0n)
     await denied(registry, 'withdrawNode', [keys[0].address], admin, 'InvalidPhase')
     await denied(mining, 'proveEquivocation', [keys[0].address, a.report, await sig(keys[0], a.report), b.report, await sig(keys[0], b.report)], outsider, 'InvalidEvidence')
+  })
+
+  await scenario('a lone node that misses the 30-minute commit phase still signs its own report late', async () => {
+    const input = { day: 0n, launchTime: launch, entries: await mineDay(0n), sourceHash: await read(mining, 'sessionsHash', [0n]) }
+    const ctx = { client: c, account: keys[0], distributor: mining.address,
+      dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-journal-')), collect: async () => input }
+    await c.setBalance({ address: keys[0].address, value: parseEther('10') })
+    await at(launch + DAY + COMMIT + 600n) // the node was offline for the whole commit phase
+    assert.equal(await processDay(ctx, 0n, launch, await now()), 'waiting for review')
+    assert.equal(await read(mining, 'commitments', [0n, keys[0].address]), zeroHash)
+    assert.equal(await read(mining, 'announcementCount', [0n]), 0n) // without a commitment it cannot announce, and needs not
+    await at(await now() + REVIEW)
+    assert.equal(await processDay(ctx, 0n, launch, await now()), 'activated')
   })
 
   await scenario('a key slashed for one day still loses its signature on another day it double-signed', async () => {
@@ -528,10 +539,12 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   await scenario('node-work x5 is verified onchain from the previous day signature; claimMany within 7 days', async () => {
     const day0 = await mineDay(0n)
     const day1 = await mineDay(1n, [[1, alice], [2, admin, 2000n, keys[0].address]])
-    const day2 = await mineDay(2n, [[3, bob, 2000n, keys[0].address]]) // bob does not operate keys[0]
-    const r1 = await report(1n, day1), r2 = await report(2n, day2)
+    const r1 = await report(1n, day1)
     assert.equal(weightOf(r1.entries[1]), 250n)
-    await certify(await report(0n, day0)); await certify(r1) // each day committed in its own phase 1
+    await certify(await report(0n, day0)) // right after day 0's close, in its own phase 1
+    const day2 = await mineDay(2n, [[3, bob, 2000n, keys[0].address]]) // bob does not operate keys[0]
+    const r2 = await report(2n, day2)
+    await certify(r1)
     await reveal(r2); await submit(r2)
     await denied(mining, 'publishAllocations', [2n, r2.entries, r2.proofs], outsider, 'InvalidAllocation')
     await at(await now() + 2n * DAY)
@@ -546,13 +559,13 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   })
 
   await scenario('one transaction opens the next session and claims every open earlier day', async () => {
-    const r = await report(); await activate(r) // now day 4
+    const r = await report(); await activate(r) // day 0 claims open about 1.5 hours into day 1
     const before = await read(token, 'balanceOf', [alice])
-    await send(mining, 'startMiningAndClaim', [1n, castOf(1, 4n), [0n, 3n]], alice) // day 3 holds nothing: skipped
+    await send(mining, 'startMiningAndClaim', [1n, castOf(1, 1n), [0n, 3n]], alice) // day 3 holds nothing yet: skipped
     assert.equal(await read(token, 'balanceOf', [alice]), before + r.amounts[0])
-    assert.equal((await read(mining, 'sessions', [4n, alice]))[0], 1n)
+    assert.equal((await read(mining, 'sessions', [1n, alice]))[0], 1n)
     await denied(mining, 'claimMany', [[0n]], alice, 'InvalidPhase')
-    await denied(mining, 'startMiningAndClaim', [2n, castOf(2, 4n), Array(101).fill(0n)], bob, 'InvalidPhase')
+    await denied(mining, 'startMiningAndClaim', [2n, castOf(2, 1n), Array(101).fill(0n)], bob, 'InvalidPhase')
   })
 
   await scenario('burn-boost levels: unlocked by the release calendar, permanent per wallet, x1.2 weight and cap per level', async () => {
@@ -732,15 +745,15 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     const r = await report(0n), other = await report(0n, r.entries.map((e, i) => i ? e : { ...e, followers: e.followers + 1n }))
     await c.setBalance({ address: keys[0].address, value: parseEther('10') })
     const commitment = commitmentOf(openDigest(31337, mining.address, r.report), keys[0].address)
-    await denied(mining, 'commitReport', [0n, commitment], keys[0], 'InvalidPhase')
-    await at(launch + 2n * DAY + 6n * HOUR)
+    await denied(mining, 'commitReport', [0n, commitment], keys[0], 'InvalidPhase') // the cohort is still open
+    await at(launch + DAY)
     await denied(mining, 'commitReport', [0n, commitment], outsider, 'InvalidSignature')
     await denied(mining, 'announceReport', [0n, r.report, r.entries], keys[0], 'InvalidSignature') // nothing committed
     await send(mining, 'commitReport', [0n, commitment], keys[0])
     await denied(mining, 'commitReport', [0n, commitment], keys[0], 'InvalidSignature')
     await denied(mining, 'announceReport', [0n, r.report, r.entries], keys[0], 'InvalidPhase') // still phase 1
     await assert.rejects(submit(r), /InvalidPhase/) // no signature may leak during phase 1 either
-    await at(launch + 2n * DAY + 12n * HOUR)
+    await at(launch + DAY + COMMIT)
     await denied(mining, 'commitReport', [0n, commitment], keys[0], 'InvalidPhase')
     await denied(mining, 'announceReport', [0n, other.report, other.entries], keys[0], 'InvalidSignature') // not what it committed
     await send(mining, 'announceReport', [0n, r.report, r.entries], keys[0])

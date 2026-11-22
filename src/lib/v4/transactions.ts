@@ -8,6 +8,7 @@ import { verifyV4 } from "./read"
 export type V4Action =
   | { kind: "claim" | "activateDay"; day: bigint }
   | { kind: "startMining"; fid: bigint; castHash: Hex; claimDays?: bigint[] }
+  | { kind: "claimMany"; days: bigint[] }
   | { kind: "stake" | "withdraw"; amount: bigint }
   | { kind: "activatePower" | "revokeApproval" | "openVote" | "buyBoost" }
   | { kind: "claimStake" | "finalizeEpoch" | "sweepEpoch"; epoch: bigint }
@@ -24,8 +25,9 @@ export function actionCall(config: V4Config, action: V4Action): { address: Addre
   switch (action.kind) {
     case "claim": return { ...mining, functionName: "claim", args: [action.day], label: "Mining claim" }
     case "startMining": return action.claimDays?.length
-      ? { ...mining, functionName: "startMiningAndClaim", args: [action.fid, action.castHash, action.claimDays], label: "Start 24h session and claim rewards" }
-      : { ...mining, functionName: "startMining", args: [action.fid, action.castHash], label: "Start 24h mining session" }
+      ? { ...mining, functionName: "startMiningAndClaim", args: [action.fid, action.castHash, action.claimDays], label: "Start today's session and claim rewards" }
+      : { ...mining, functionName: "startMining", args: [action.fid, action.castHash], label: "Start today's mining session" }
+    case "claimMany": return { ...mining, functionName: "claimMany", args: [action.days], label: "Claim earlier mining rewards" }
     case "activateDay": return { ...mining, functionName: "activateDay", args: [action.day], label: "Open claim window" }
     case "stake": case "withdraw":
       if (action.amount <= 0n) throw Error("Enter an amount greater than zero.")

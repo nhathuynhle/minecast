@@ -29,7 +29,7 @@ beforeEach(() => {
       if(path==='rpc/start_v4_mining_session_with_estimate') {
         const p=JSON.parse(init.body);inserted++
         const row={id:'id1',fid:p.p_fid,wallet_address:p.p_wallet,cast_hash:p.p_cast_hash,day:p.p_day,
-          started_at:p.p_started_at,ends_at:new Date(Date.parse(p.p_started_at)+86400000).toISOString()}
+          started_at:p.p_started_at,ends_at:new Date((Math.floor(Date.parse(p.p_started_at)/86400000)+1)*86400000).toISOString()}
         rows.push(row);return Response.json([row])
       }
       return Response.json(rows)
@@ -47,7 +47,7 @@ test('V4 cast uses verified FID and server chain time; browser reward/day are ig
   const p=JSON.parse(calls[0].init.body)
   assert.equal(p.p_started_at,new Date(Number(now)*1000).toISOString());assert.equal('amount' in p,false)
   assert.equal(p.p_follower_count,2000,'must use Neynar, not input followers')
-  assert.equal(Date.parse(b.session.ends_at)-Date.parse(b.session.started_at),86400000)
+  assert.equal(Date.parse(b.session.ends_at)%86400000,0) // sessions end at their UTC cohort close
 })
 test('edited text and image-only casts are accepted by canonical hash',async()=>{
   cast.text='';assert.equal((await handler(req({castUrl:'https://farcaster.xyz/me/0x33333333',castHash:undefined}))).status,201)

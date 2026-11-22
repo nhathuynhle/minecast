@@ -101,7 +101,7 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     /// @notice Anyone may remove a key that signed nothing for INACTIVITY_DAYS report days, or that kept
     ///         signing but joined none of the last MISSED_CERTIFIED_DAYS reports the quorum certified, so an
     ///         abandoned or dissenting bond cannot erode the >2/3 margin forever. Escrow returns normally.
-    /// @dev Day d is signable from dayEnd(d)+30h, i.e. during day d+2; one extra day is grace.
+    /// @dev Day d is signable from dayEnd(d)+30m, i.e. early in day d+1; two extra days are grace.
     function ejectInactive(address signingKey) external {
         Node storage n = nodes[signingKey];
         uint256 last = lastSignedDay[signingKey] > n.startDay ? lastSignedDay[signingKey] : n.startDay;

@@ -51,18 +51,18 @@ export type V4Network = Awaited<ReturnType<typeof readV4Network>>
 export async function readV4Day(client: PublicClient, config: V4Config, network: V4Network, day: bigint, account?: Address): Promise<MiningDay> {
   if (day < 0n || day > network.day) throw Error("Choose a mining day between 0 and the current day.")
   const blockNumber = network.blockNumber
-  const [info, allocation, pool, reviewPeriod, resultWindow, workWindow] = await Promise.all([
+  const [info, allocation, pool, reviewPeriod, resultWindow, commitWindow] = await Promise.all([
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "dayInfo", args: [day], blockNumber }),
     account ? client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "allocations", args: [day, account], blockNumber }) : [0n, 0n, false] as const,
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "dailyEmissionForDay", args: [day], blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "REVIEW_PERIOD", blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "RESULT_WINDOW", blockNumber }),
-    client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "WORK_WINDOW", blockNumber }),
+    client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "COMMIT_WINDOW", blockNumber }),
   ])
   const [, certifiedAt] = await client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "certificate", args: [info.digest], blockNumber })
   return { day, digest: info.digest, allocated: info.report.allocated, totalWeight: info.report.totalWeight, published: info.published,
     leafCount: info.report.leafCount, certifiedAt, claimEnd: info.claimEnd, contested: info.contested,
-    fid: allocation[0], amount: allocation[1], claimed: allocation[2], pool, end: network.launch + (day + 1n) * DAY, reviewPeriod, resultWindow, workWindow }
+    fid: allocation[0], amount: allocation[1], claimed: allocation[2], pool, end: network.launch + (day + 1n) * DAY, reviewPeriod, resultWindow, commitWindow }
 }
 
 /** Earlier days whose 7-day claim window is open for `account`; a day can stay claimable ~16 days after it ends. */

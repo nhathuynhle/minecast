@@ -27,7 +27,7 @@
 | H-1 | Cao | Hai node lệch nhau một bậc follower (hoặc một node xấu công bố trước) là cả ngày không chứng nhận được | Lỗi code (worker + luật ⅓ cam kết) |
 | H-2 | Cao | Khi dưới ~100 người đào, trần 1%/ví làm follower và ×5 mất tác dụng; FID 0 follower vẫn nhận ~1 triệu token/ngày | Thiết kế kinh tế |
 | H-3 | Cao → **đã giảm** | Quỹ DAO nhận phần lớn emission giai đoạn đầu, chi tiêu chỉ cần đa số đơn giản | Thiết kế governance |
-| M-1 | Trung bình | Spam phiên đào làm node không kịp thu thập trong 6 giờ cam kết | Liveness / DoS |
+| M-1 | Trung bình → **đã giảm** | Spam phiên đào làm node không kịp thu thập trong 6 giờ cam kết | Liveness / DoS |
 | M-2 | Trung bình → **đã sửa** | Một node tự ký hai bản (mất 1 triệu cọc) có thể hủy vĩnh viễn một ngày đã chứng nhận | Griefing |
 | L-1 | Thấp → **đã sửa** | Key đã bị slash một lần thì bằng chứng ký đôi ở ngày khác bị revert, chữ ký của nó vẫn được tính | Lỗi code |
 | L-2 | Thấp | Vote airdrop/burn hằng tháng không có quorum | Thiết kế |
@@ -124,6 +124,13 @@ Gói Free của Neynar giới hạn 600 request/phút cho mỗi endpoint. Dù ch
 - Chạy song song tới sát giới hạn rate.
 - Nếu vẫn cần thì thêm phí mở phiên onchain nhỏ.
 
+**Trạng thái (2026-11-22): đã giảm, theo cách khác với đề xuất.**
+- Policy `Quorum.7` rút khung cam kết xuống **30 phút** ngay sau 00:00 UTC, nên thu thập dồn hết vào sau giờ đóng thì càng không kịp. Vì vậy worker giờ kiểm tra **trong lúc cohort còn mở** (`prewarm`, mỗi lần chạy): mỗi cast mới được đọc một lần.
+- Cast không tồn tại hoặc sai giờ thì được ghi lại là bị loại vĩnh viễn (sau 10 phút, để chờ cast lan truyền), và không bao giờ bị đọc lại. Tier follower được tính sẵn, chỉ cho FID có cast thật.
+- Sau giờ đóng chỉ đọc lại người đào thật: cast còn không, ví còn verify không. Chạy song song 8 luồng.
+- Sức chứa với gói Free (600 request/phút mỗi endpoint): spam khoảng 860.000 phiên/ngày vẫn được lọc trong ngày. Sau giờ đóng xử lý được khoảng 15.000–18.000 người đào thật trong 30 phút. Đông hơn mức đó thì cần gói Neynar cao hơn hoặc Snapchain riêng.
+- Còn lại: spam dồn vào vài phút cuối trước 00:00 UTC vẫn phải đọc sau giờ đóng, và chưa có phí mở phiên.
+
 ## M-2. Một key tự ký đôi hủy vĩnh viễn một ngày đã chứng nhận
 
 **Vị trí:** `proveEquivocation` (dòng 369–384).
@@ -201,5 +208,5 @@ Governor dùng đồng hồ theo số block của staking (43.200 block = 1 ngà
 
 1. **H-1** (worker chọn theo cọc cam kết + event `ReportCommitted`) cùng regression test từ PoC ở trên. Cần làm trước khi deploy, vì đây là lỗi do luật mới thêm hôm nay.
 2. ~~**M-2** và **L-1**~~ đã sửa ngày 2026-11-22.
-3. **M-1** (thu thập sớm và song song trong worker).
+3. ~~**M-1**~~ đã giảm ngày 2026-11-22 (kiểm tra trong ngày + song song).
 4. **H-2** và **H-3** là quyết định thiết kế của chủ dự án: mẫu số tối thiểu W_MIN, trần chi tiêu DAO.

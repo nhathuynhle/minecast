@@ -52,13 +52,14 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const [dao, setDao] = useState<V4Dao | null>(null)
   const [sessions, setSessions] = useState<V4Session[]>([])
   const [eligible, setEligible] = useState(false)
+  const [ready, setReady] = useState<bigint[]>([]) // earlier days this wallet can claim now
   const [sessionMessage, setSessionMessage] = useState("")
   const [dayInput, setDayInput] = useState("")
   const [epochInput, setEpochInput] = useState("")
   const [monthInput, setMonthInput] = useState("")
   const [stakeAmount, setStakeAmount] = useState("")
   const [castLink, setCastLink] = useState("")
-  const [castText, setCastText] = useState("Mining with the Farcaster community on MineCast. Join my next 24-hour session!")
+  const [castText, setCastText] = useState("Mining with the Farcaster community on MineCast. Join today's session!")
   const [error, setError] = useState("")
   const [sessionError, setSessionError] = useState("")
   const [busy, setBusy] = useState(false)
@@ -117,10 +118,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
       const selectedDay = /^\d{1,8}$/.test(dayInput) ? BigInt(dayInput) : rows.length ? BigInt(rows[0].day) : n.day
       const selectedEpoch = /^\d{1,8}$/.test(epochInput) ? BigInt(epochInput) : (n.timestamp > n.launch + 30n * DAY ? (n.timestamp - n.launch) / (30n * DAY) - 1n : 0n)
       const month = validMonth(monthInput) ? BigInt(monthInput) : monthAt(n.timestamp)
-      const [d, st, gov] = await Promise.all([readV4Day(client, config, n, selectedDay, account), readV4Stake(client, config, n, selectedEpoch, account), readV4Dao(client, config, n, month, account)])
+      const [d, st, gov, claimable] = await Promise.all([readV4Day(client, config, n, selectedDay, account), readV4Stake(client, config, n, selectedEpoch, account), readV4Dao(client, config, n, month, account),
+        account ? claimableDays(client, config, n, account).catch(() => []) : []])
       if (current !== sequence.current) return
       sessionsRef.current = rows
-      setNetwork(n); setDayData(d); setStake(st); setDao(gov); setSessions(rows); setEligible(canCast)
+      setNetwork(n); setDayData(d); setStake(st); setDao(gov); setSessions(rows); setEligible(canCast); setReady(claimable)
       setSessionMessage(reason); setSessionError(intakeError); setUpdated(readAt); setError("")
     } catch (e) { if (current === sequence.current) { setError(friendlyV4Error(e)); setUpdated(0); setEligible(false) } }
     finally { if (current === sequence.current) setRefreshing(false) }
@@ -179,7 +181,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
     try {
       let identifier = recover ? castLink.trim() : ""
       if (!identifier) {
-        // The intake server is an optional helper; the contract itself enforces one session per wallet per 24h.
+        // The intake server is an optional helper; the contract itself enforces one session per wallet per UTC day.
         const gateResponse = await farcasterFetch("/api/v4/mining", { signal: AbortSignal.timeout(12000) }).catch(() => null)
         const gate = gateResponse?.ok ? await gateResponse.json() : null
         if (gate && (gate.protocol !== "open-v4-quorum-1" || gate.chainId !== config.chainId || gate.distributor?.toLowerCase() !== config.distributor.toLowerCase() || gate.fid !== identity.fid)) throw Error("Session server does not match this V4 deployment or identity.")
@@ -224,9 +226,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
       {tab === "mine" && <>
         <Card title="Mining session"><div className="v4-row"><span className="v4-muted">{identity ? `@${identity.username}` : "Open in Farcaster to cast"}</span><span className="mc-era">Day {String(dayData?.day ?? network.day)}</span></div>
           {timestamp < network.launch ? <div className="v4-countdown"><FarcasterIcon /><strong>{countdown(network.launch, timestamp)}</strong><span>Until launch</span></div>
-            : <div className="v4-countdown"><FarcasterIcon /><strong>{deadline ? countdown(deadline, timestamp) : phase === "claimed" ? "Claimed" : !session && !dayData?.certifiedAt ? "24:00:00" : "—"}</strong><span>{!session && !dayData?.certifiedAt ? "Session duration" : phase ? labels[phase] : "Choose a mining day"}</span></div>}
+            : <div className="v4-countdown"><FarcasterIcon /><strong>{deadline ? countdown(deadline, timestamp) : phase === "claimed" ? "Claimed" : !session && !dayData?.certifiedAt ? countdown(network.launch + (network.day + 1n) * DAY, timestamp) : "—"}</strong><span>{!session && !dayData?.certifiedAt ? "Until today's cohort closes" : phase ? labels[phase] : "Choose a mining day"}</span></div>}
           {session && account && session.wallet_address.toLowerCase() !== account.toLowerCase() && <p className="v4-muted">This session pays {short(session.wallet_address)}. Connect that wallet to claim its reward.</p>}
           {phase === "claimable" && dayData && <><div className="v4-reward">{tokens(dayData.amount)} <small>TOKENCAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button><p className="v4-muted">Claim by {date(dayData.claimEnd)}</p></>}
+          {ready.some(day => day !== dayData?.day) && <><p className="v4-muted">Earlier rewards ready: day {ready.join(", ")}. Mining today does not need to wait for them.</p>
+            <Button secondary disabled={locked} onClick={() => void transact({ kind: "claimMany", days: ready })}><ArrowDownToLine size={18} />Claim earlier rewards</Button></>}
           {phase === "claimed" && dayData && <p className="v4-success">{tokens(dayData.amount)} TOKENCAST claimed onchain.</p>}
           {phase === "activate" && dayData && <><p>Report review is complete. Opening claims starts the 7-day claim window for this cohort.</p><Button disabled={locked} onClick={() => void transact({ kind: "activateDay", day: dayData.day })}>Open claim window</Button></>}
           {phase === "publishing" && dayData && <p className="v4-muted">{String(dayData.published)} / {String(dayData.leafCount)} allocations published.</p>}
@@ -249,12 +253,12 @@ function ConnectedV4({ config }: { config: V4Config }) {
           <label className="sr-only" htmlFor="v4-cast">Suggested cast</label><textarea id="v4-cast" value={castText} maxLength={1024} onChange={e => setCastText(e.target.value)} rows={3} />
           <p className="v4-muted">Edit the text or add images in Farcaster before posting.</p>
           {network.moved && <p className="v4-muted">Stake governance moved mining to a new contract ({network.currentDistributor}). This app version still settles earlier days; update the app to keep mining.</p>}
-          <Button disabled={locked || !identity || !eligible || !!castLink || network.moved} onClick={() => void postCast(false)}><Send size={17} />Post cast & start 24h</Button>
+          <Button disabled={locked || !identity || !eligible || !!castLink || network.moved} onClick={() => void postCast(false)}><Send size={17} />Post cast & start today's session</Button>
           <details open={!!castLink}><summary>Already posted? Verify your cast</summary><label>Cast link or hash<input value={castLink} onChange={e => { setCastLink(e.target.value); save(castKey, e.target.value) }} placeholder="https://farcaster.xyz/…" /></label>
             <Button disabled={locked || !identity || !castLink.trim() || network.moved} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
-          <details><summary>When can I claim?</summary><p>Each cohort starts at the contract's launch time plus whole 24-hour days, not a fixed 06:00 UTC cutoff. Your starting cohort determines your pool.</p>
-            {dayData && <p>Cohort closes {date(dayData.end)}. Nodes commit to their own report from {date(dayData.end + DAY + dayData.workWindow)} and sign from 6 hours later.</p>}
-            <p>A session lasts 24 hours. Nodes then publish the daily report and complete a 48-hour review. Your claim window lasts 7 days after the cohort is activated.</p>
+          <details><summary>When can I claim?</summary><p>Each cohort is one UTC day. Your session counts for the day you open it and runs until that cohort closes at 00:00 UTC; you can open the next day's session straight away.</p>
+            {dayData && <p>Cohort closes {date(dayData.end)}. Nodes commit to their own report until {date(dayData.end + dayData.commitWindow)}, then sign and publish it.</p>}
+            <p>After a {String(dayData ? dayData.reviewPeriod / 60n : 60n)}-minute public review the claim window opens for 7 days, usually within two hours of the close. Claiming never blocks your next session.</p>
             <p>Estimates refresh throughout every hour as cohort participation changes. Finished sessions remain in the cohort denominator. Other apps may submit more miners, so these app counts are not a network-wide reward guarantee.</p></details>
         </Card>
         <Card title="Permanent boost"><p className="v4-muted">Level {network.boostLevel} · ×{(1 + network.boostLevel * 0.2).toFixed(1)} weight and daily cap for sessions you open from now on, applied on top of the ×100 base cap.</p>

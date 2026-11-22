@@ -16,13 +16,15 @@ test('V4 session migration executes on PostgreSQL and enforces identity/session 
   await db.exec(sql); await db.exec(sql) // Safe repeat; no legacy table modifications.
   const estimatesSql = fs.readFileSync('supabase/migrations/20261110_v4_live_estimates.sql','utf8')
   await db.exec(estimatesSql); await db.exec(estimatesSql)
+  const utcDaySql = fs.readFileSync('supabase/migrations/20261122_v4_utc_day_sessions.sql','utf8')
+  await db.exec(utcDaySql); await db.exec(utcDaySql)
   async function start({ fid=42, wallet=hash(1), cast=hash(100), day=0, time='2030-01-01T00:00:00Z', chain=84532 }={}) {
     return (await db.query('select * from public.start_v4_mining_session($1::integer,$2::text,$3::bigint,$4::text,$5::text,$6::bigint,$7::timestamptz)',
       [chain,hash(2),fid,wallet,cast,day,time])).rows
   }
-  await t.test('idempotent cast keeps original start and exact 24-hour end', async () => {
-    const [row]=await start(), [again]=await start({time:'2030-01-01T00:05:00Z'})
-    assert.equal(row.id,again.id);assert.equal(new Date(row.ends_at)-new Date(row.started_at),86400000)
+  await t.test('idempotent cast keeps original start and ends at its UTC cohort close', async () => {
+    const [row]=await start({time:'2030-01-01T05:00:00Z'}), [again]=await start({time:'2030-01-01T06:00:00Z'})
+    assert.equal(row.id,again.id);assert.equal(new Date(row.ends_at).toISOString(),'2030-01-02T00:00:00.000Z')
     assert.equal(String(row.fid),'42')
   })
   await t.test('overlap, duplicate day, identity changes and cast theft are rejected', async () => {
@@ -53,12 +55,13 @@ test('V4 session migration executes on PostgreSQL and enforces identity/session 
   await t.test('live totals retain completed cohort miners, exclude future starts and isolate deployments',async()=>{
     const now=new Date((await db.query('select now() as n')).rows[0].n).getTime()
     const iso=hours=>new Date(now+hours*3600000).toISOString()
-    const create=async({fid,day=7,time=iso(-1),followers=2000,chain=84532,distributor=hash(9)})=>(await db.query(
+    const dayStart=new Date(Math.floor(now/86400000)*86400000).toISOString() // sessions opened today run until the next 00:00 UTC
+    const create=async({fid,day=7,time=dayStart,followers=2000,chain=84532,distributor=hash(9)})=>(await db.query(
       'select * from start_v4_mining_session_with_estimate($1::integer,$2::text,$3::bigint,$4::text,$5::text,$6::bigint,$7::timestamptz,$8::bigint)',
       [chain,distributor,fid,hash(fid),hash(fid+1000),day,time,followers])).rows[0]
     await create({fid:100,day:7}) // active, same cohort x10
     await create({fid:101,day:7,time:iso(-30),followers:1000}) // ended, remains in pool x6
-    await create({fid:102,day:8,time:iso(-0.5)}) // active, another cohort
+    await create({fid:102,day:8}) // active, another cohort
     await create({fid:103,day:8,time:iso(1)}) // not started
     await create({fid:104,chain:8453}) // different chain
     await create({fid:105,distributor:hash(10)}) // another deployment

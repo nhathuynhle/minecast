@@ -49,8 +49,8 @@ A rule change should start on the first day of a month at least 4 weeks after su
 ## 5. Nodes
 
 - Anyone can run a node by bonding at least 1,000,000 TOKENCAST. Activation is possible 7 days after registration, and the node counts from the following day.
-- A report becomes final when keys holding more than two thirds of active bond sign the same report, and keys holding more than one third of active bond had committed to exactly that report on their own in the first phase. Co-signing alone can never finalize a report.
-- Each report window has two phases. For the first 6 hours, nodes may only commit to a hash of the report they built themselves. Afterwards they reveal it with `announceReport` and co-sign the earliest announcement that matches their own data within one follower tier.
+- A report becomes final when keys holding more than two thirds of active bond sign the same report, and keys holding more than one third of active bond had committed to exactly that report on their own in the first phase. Co-signing alone can never finalize a report. The one exception is a key that alone holds more than two thirds of active bond: nobody can outvote it, so it may finalize without a first-phase commitment, and a lone node that misses the commit phase does not lose the day. Whoever holds that much bond decides the daily reports, but still cannot touch supply, emission, the treasury or governance.
+- Each report window has two phases. A day's cohort closes at 00:00 UTC. For the first 30 minutes after the close, nodes may only commit to a hash of the report they built themselves. Afterwards they reveal it with `announceReport` and co-sign the earliest announcement that matches their own data within one follower tier.
 - The node bonus (×5 for the operator's own mining) is earned only by a key whose own commitment matched the certified report, so copying other nodes earns nothing.
 - A key that signs two different reports for the same day loses its bond.
 - A key that signs nothing for 14 report days, or joins none of the last 14 certified reports, can be removed by anyone. Its escrow is returned after the exit delay.

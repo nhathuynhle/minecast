@@ -30,9 +30,8 @@ export async function gateV4(config: V4Config, sessions: V4Session[]) {
   if (network.totalBond < 1000000n * 10n ** 18n) return { eligible: false, reason: "Waiting for an active validator bond before starting mining.", network }
   const latest = sessions[0]
   if (latest) {
-    if (Date.parse(latest.ends_at) / 1000 > Number(network.timestamp)) return { eligible: false, reason: "Your 24-hour mining session is still active.", network }
-    if (BigInt(latest.day) === network.day) return { eligible: false, reason: "This account already has a session in today's cohort.", network }
-    // Earlier rewards stay claimable for 7 days after activation; they never block the next 24h session.
+    if (BigInt(latest.day) === network.day) return { eligible: false, reason: "This account already has a session in today's cohort. The next one opens at 00:00 UTC.", network }
+    // Earlier rewards stay claimable for 7 days after activation; they never block the next day's session.
   }
   return { eligible: true, reason: "Ready to cast.", network }
 }

@@ -84,16 +84,17 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     const bundle = buildOpenReport({ chainId: 84532, distributor: mining.address, day, launchTime: launch,
       sourceHash: await c.readContract({ ...mining, functionName: 'sessionsHash', args: [day] }),
       entries: [{ fid: 42n, wallet: miner, followers: 2000n, nodeWork: false, castHash, startedAt, level }] })
-    await at(launch + (day + 2n) * DAY + 6n * 3600n) // phase 1: the node commits to the report it built
+    const close = launch + (day + 1n) * DAY
+    if ((await c.getBlock()).timestamp < close) await at(close) // phase 1 at the 00:00 UTC close: the node commits
     await c.setBalance({ address: key.address, value: parseEther('1') })
     await c.waitForTransactionReceipt({ hash: await c.writeContract({ ...mining, functionName: 'commitReport', account: key,
       args: [day, commitmentOf(openDigest(84532, mining.address, bundle.report), key.address)] }) })
-    await at(launch + (day + 2n) * DAY + 12n * 3600n) // phase 2: sign
+    await at(close + 1800n) // phase 2 after the 30-minute commit phase: sign
     await send(mining, 'submitSignatures', [bundle.report, [key.address], [await key.signTypedData(typedReport(84532, mining.address, bundle.report))]])
     await send(mining, 'publishAllocations', [day, bundle.entries, bundle.proofs])
     const n = await network(), d = await readApp.readV4Day(c, config, n, day, miner)
     assert.equal(miningPhase(d, n.timestamp), 'review')
-    await at((await c.getBlock()).timestamp + 2n * DAY)
+    await at((await c.getBlock()).timestamp + 3600n) // 1-hour review
     await action({ kind: 'activateDay', day })
     return bundle
   }
@@ -134,7 +135,14 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
   })
   await at(launch + 36n * DAY); await action({ kind: 'activatePower' })
   // A February cohort to airdrop on in March; reported before the February ledger closes.
-  await startSession(40n); await publish(40n); await action({ kind: 'claim', day: 40n })
+  // The next cohort's session opens at 00:00 UTC while day 40 still waits for its report; claiming comes later.
+  await startSession(40n); await startSession(41n); await publish(40n)
+  await t.test('earlier rewards are claimed together while a later session is open', async () => {
+    const n = await network()
+    assert.deepEqual(await readApp.claimableDays(c, config, n, miner), [40n])
+    await action({ kind: 'claimMany', days: [40n] })
+    assert.deepEqual(await readApp.claimableDays(c, config, await network(), miner), [])
+  })
   await t.test('monthly snapshot voting and burn use matured stake without backend signatures', async () => {
     await at(monthStart(203002n) + 16n * DAY + 100n)
     let n = await network(), d = await readApp.readV4Dao(c, config, n, 203002n, miner)

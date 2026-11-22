@@ -4,7 +4,7 @@ export type V4Session = { id: string; fid: number; wallet_address: string; cast_
 export type MiningDay = {
   day: bigint; digest: string; allocated: bigint; published: bigint; leafCount: bigint; totalWeight: bigint;
   certifiedAt: bigint; claimEnd: bigint; contested: boolean; fid: bigint; amount: bigint; claimed: boolean;
-  pool: bigint; end: bigint; reviewPeriod: bigint; resultWindow: bigint; workWindow: bigint
+  pool: bigint; end: bigint; reviewPeriod: bigint; resultWindow: bigint; commitWindow: bigint
 }
 export type MiningPhase = "mining" | "waiting" | "publishing" | "review" | "activate" | "claimable" | "claimed" | "expired" | "excluded" | "contested" | "missed"
 export function miningPhase(d: MiningDay, timestamp: bigint, session?: V4Session): MiningPhase {
