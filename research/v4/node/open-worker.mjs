@@ -251,13 +251,14 @@ export async function processDay({ client, account, distributor, dir, collect },
   info = await read('dayInfo', [day])
   if (info.digest === zeroHash) return 'waiting for quorum'
   if (info.digest !== mine.digest) return 'another report certified' // its signers publish it; we hold no proofs for it
+  const [, certifiedAt] = await read('certificate', [mine.digest])
+  if (certifiedAt === 0n) return 'quorum lost to double-sign evidence; waiting for keys that have not signed'
   // Keep this key counted as part of the accepted quorum (a key absent from 14 certified days can be ejected).
   if (await read('hasSigned', [mine.digest, account.address])
     && !(await read('certifiedSigner', [day, account.address], await read('registry')))) await send('proveCertifiedSignature', [day, account.address])
   for (let i = Number(info.published); i < mine.entries.length; i += 100) {
     await send('publishAllocations', [day, mine.entries.slice(i, i + 100), mine.proofs.slice(i, i + 100)])
   }
-  const [, certifiedAt] = await read('certificate', [mine.digest])
   if (now < certifiedAt + 2n * DAY) return 'waiting for review'
   await send('activateDay', [day])
   return 'activated'

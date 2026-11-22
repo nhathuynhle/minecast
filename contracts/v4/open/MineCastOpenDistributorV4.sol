@@ -242,7 +242,8 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     /// @notice Credit a key that signed the certified report before the quorum completed (anyone may call).
     function proveCertifiedSignature(uint256 day, address signingKey) external {
         Day storage d = _days[day];
-        if (d.digest == bytes32(0) || d.contested || _certificates[d.digest].signedAt[signingKey] == 0) revert InvalidSignature();
+        Certificate storage c = _certificates[d.digest];
+        if (d.digest == bytes32(0) || d.contested || c.certifiedAt == 0 || c.signedAt[signingKey] == 0) revert InvalidSignature();
         registry.recordCertifiedSignature(signingKey, day);
     }
 
@@ -254,6 +255,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         if (c.certifiedAt == 0 && c.signedWeight >= required && c.committedWeight > total / 3) {
             c.certifiedAt = uint64(block.timestamp);
             Day storage d = _days[r.day];
+            // The same report certified again after evidence cost it the quorum just restarts its review period.
             if (d.digest == bytes32(0)) { d.digest = digest; d.report = r; registry.noteCertifiedDay(r.day); }
             else if (d.digest != digest) {
                 // Two quorums imply at least 1/3 equivocation. Neither report can activate.
@@ -272,7 +274,8 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     /// @notice Publish every allocation on Base before opening claims. No private proof API is required.
     function publishAllocations(uint256 day, Entry[] calldata entries, bytes32[][] calldata proofs) external {
         Day storage d = _days[day];
-        if (d.digest == 0 || d.contested || d.claimEnd != 0 || block.timestamp >= dayEnd(day) + RESULT_WINDOW) revert InvalidPhase();
+        if (d.digest == 0 || d.contested || _certificates[d.digest].certifiedAt == 0 || d.claimEnd != 0
+            || block.timestamp >= dayEnd(day) + RESULT_WINDOW) revert InvalidPhase();
         if (entries.length == 0 || entries.length > MAX_BATCH || entries.length != proofs.length
             || d.published + entries.length > d.report.leafCount) revert InvalidAllocation();
         uint256 pool = token.dailyEmissionForDay(day);
@@ -318,8 +321,9 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     /// @notice Open exactly one claim window after quorum, full publication and public review.
     function activateDay(uint256 day) external nonReentrant {
         Day storage d = _days[day];
+        uint256 certifiedAt = _certificates[d.digest].certifiedAt; // zero again after quorum lost to evidence
         if (d.digest == 0 || d.contested || d.claimEnd != 0 || block.timestamp >= dayEnd(day) + RESULT_WINDOW
-            || block.timestamp < _certificates[d.digest].certifiedAt + REVIEW_PERIOD
+            || certifiedAt == 0 || block.timestamp < certifiedAt + REVIEW_PERIOD
             || d.published != d.report.leafCount || d.observedWeight != d.report.totalWeight
             || d.observedAllocation != d.report.allocated) revert InvalidPhase();
         d.claimEnd = uint64(block.timestamp + CLAIM_WINDOW);
@@ -371,21 +375,35 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         bytes32 first = reportDigest(a); bytes32 second = reportDigest(b);
         if (a.day != b.day || first == second || block.timestamp < dayEnd(a.day)
             || ECDSA.recover(first, signatureA) != signer || ECDSA.recover(second, signatureB) != signer) revert InvalidEvidence();
-        registry.slashEquivocation(signer, a.day);
-        // Proven double-signing removes this signer's support from an unopened day's
-        // winning certificate, even if a second report was never submitted for quorum.
+        // Proven double-signing removes this signer's support from an unopened day's certified report and from
+        // both signed reports, even if a second report was never submitted for quorum.
         Day storage d = _days[a.day];
-        Certificate storage c = _certificates[d.digest];
-        if (d.claimEnd == 0 && c.signedAt[signer] != 0) {
-            uint256 weight = registry.weightAt(signer, a.day); uint256 total = registry.totalWeightAt(a.day);
-            c.signedWeight -= weight;
-            if (_committed(a.day, signer, d.digest)) c.committedWeight -= weight;
-            if (c.signedWeight < _requiredWeight(total) || c.committedWeight <= total / 3) {
-                d.contested = true;
-                emit CertificateInvalidated(a.day, d.digest, c.signedWeight);
-            }
+        bool dropped;
+        if (d.claimEnd == 0) {
+            dropped = _dropSupport(a.day, signer, d.digest);
+            dropped = _dropSupport(a.day, signer, first) || dropped;
+            dropped = _dropSupport(a.day, signer, second) || dropped;
         }
+        // A key already slashed for another day has no bond left to burn, but still loses its support here.
+        if (!registry.isSlashed(signer)) registry.slashEquivocation(signer, a.day);
+        else if (!dropped) revert InvalidEvidence();
         emit EquivocationProven(a.day, signer, first, second);
+    }
+
+    /// @dev Losing the quorum reopens the day to keys that have not signed yet instead of voiding it, so one
+    ///      self-equivocating key cannot cancel a day; only two conflicting certificates mark a day contested.
+    function _dropSupport(uint256 day, address signer, bytes32 digest) private returns (bool) {
+        Certificate storage c = _certificates[digest];
+        if (c.signedAt[signer] == 0) return false;
+        uint256 weight = registry.weightAt(signer, day); uint256 total = registry.totalWeightAt(day);
+        c.signedAt[signer] = 0; // counted once, however much evidence arrives
+        c.signedWeight -= weight;
+        if (_committed(day, signer, digest)) c.committedWeight -= weight;
+        if (c.certifiedAt != 0 && (c.signedWeight < _requiredWeight(total) || c.committedWeight <= total / 3)) {
+            c.certifiedAt = 0;
+            emit CertificateInvalidated(day, digest, c.signedWeight);
+        }
+        return true;
     }
 
     /// @notice Freeze monthly claimed-mining totals after all possible report and claim windows close.

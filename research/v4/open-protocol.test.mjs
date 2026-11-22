@@ -355,7 +355,10 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal((await read(mining, 'dayInfo', [0n])).contested, false)
     const before = await read(token, 'totalSupply')
     await send(mining, 'proveEquivocation', [keys[0].address, a.report, await sig(keys[0], a.report), b.report, await sig(keys[0], b.report)], outsider)
-    assert.equal((await read(mining, 'dayInfo', [0n])).contested, true)
+    // Quorum lost, not voided: the day waits for unsigned keys (none are left here), and b loses the support too.
+    assert.equal((await read(mining, 'dayInfo', [0n])).contested, false)
+    assert.deepEqual(await read(mining, 'certificate', [openDigest(31337, mining.address, a.report)]), [0n, 0n])
+    assert.equal((await read(mining, 'certificate', [digestB]))[0], 0n)
     await denied(mining, 'publishAllocations', [0n, a.entries, a.proofs], admin, 'InvalidPhase')
     await denied(registry, 'slashEquivocation', [keys[0].address, 0n], outsider, 'Unauthorized')
     assert.equal(await read(token, 'totalSupply'), before - minBond)
@@ -363,7 +366,22 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(registry, 'totalWeightAt', [0n]), minBond)
     assert.equal(await read(registry, 'totalWeightAt', [3n]), 0n)
     await denied(registry, 'withdrawNode', [keys[0].address], admin, 'InvalidPhase')
-    await denied(mining, 'proveEquivocation', [keys[0].address, a.report, await sig(keys[0], a.report), b.report, await sig(keys[0], b.report)], outsider, 'InvalidPhase')
+    await denied(mining, 'proveEquivocation', [keys[0].address, a.report, await sig(keys[0], a.report), b.report, await sig(keys[0], b.report)], outsider, 'InvalidEvidence')
+  })
+
+  await scenario('a key slashed for one day still loses its signature on another day it double-signed', async () => {
+    const r0 = await report(0n), r1 = await report(1n), junk0 = await report(0n, []), junk1 = await report(1n, [])
+    await reveal(r0); await submit(r0)
+    await reveal(r1); await submit(r1)
+    const digest1 = openDigest(31337, mining.address, r1.report)
+    assert.ok((await read(mining, 'certificate', [digest1]))[1] > 0n)
+    const evidence1 = [keys[0].address, r1.report, await sig(keys[0], r1.report), junk1.report, await sig(keys[0], junk1.report)]
+    await send(mining, 'proveEquivocation', [keys[0].address, r0.report, await sig(keys[0], r0.report), junk0.report, await sig(keys[0], junk0.report)], outsider)
+    await send(mining, 'proveEquivocation', evidence1, outsider) // no bond left to burn, support still removed
+    assert.deepEqual(await read(mining, 'certificate', [digest1]), [0n, 0n])
+    assert.equal(await read(mining, 'committedWeight', [digest1]), 0n)
+    assert.equal((await read(mining, 'dayInfo', [1n])).contested, false)
+    await denied(mining, 'proveEquivocation', evidence1, outsider, 'InvalidEvidence') // counted once
   })
 
   await scenario('false equivocation accusations cannot confiscate escrow', async () => {
@@ -746,15 +764,20 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.deepEqual(await read(mining, 'certificate', [digest]), [4n * minBond, 0n])
     assert.equal(await read(mining, 'committedWeight', [digest]), minBond)
     const s14 = await report(14n, e14), digest14 = openDigest(31337, mining.address, s14.report)
-    await reveal(s14, [keys[0], keys[1]]) // half the stake built it
-    await submit(s14, all)
+    await reveal(s14, [keys[0], keys[1], keys[3]]) // three quarters built it; keys[3] is late to sign
+    await submit(s14, all.slice(0, 3))
     assert.ok((await read(mining, 'certificate', [digest14]))[1] > 0n)
-    // A proven equivocator's commitment leaves with its signature: 3/4 signed stays above 2/3, 1/4 committed does not.
+    // A proven equivocator's commitment leaves with its signature: 2/4 signed and 1/4 committed lose the quorum.
     const other = await report(14n, [])
     await send(mining, 'proveEquivocation', [keys[1].address, s14.report, await sig(keys[1], s14.report), other.report, await sig(keys[1], other.report)], outsider)
-    assert.equal((await read(mining, 'certificate', [digest14]))[0], 3n * minBond)
+    assert.deepEqual(await read(mining, 'certificate', [digest14]), [2n * minBond, 0n])
     assert.equal(await read(mining, 'committedWeight', [digest14]), minBond)
-    assert.equal((await read(mining, 'dayInfo', [14n])).contested, true)
+    await denied(mining, 'publishAllocations', [14n, s14.entries, s14.proofs], outsider, 'InvalidPhase')
+    // One self-equivocating key cannot cancel the day: the late honest key restores the quorum.
+    await submit(s14, [keys[3]])
+    assert.ok((await read(mining, 'certificate', [digest14]))[1] > 0n)
+    assert.equal((await read(mining, 'dayInfo', [14n])).contested, false)
+    same((await read(mining, 'dayInfo', [14n])).digest, digest14)
   })
 
   await scenario('governance can only hand over whole future UTC months, never past or partial ones', async () => {

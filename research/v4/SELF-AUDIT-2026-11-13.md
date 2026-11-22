@@ -28,8 +28,8 @@
 | H-2 | Cao | Khi dưới ~100 người đào, trần 1%/ví làm follower và ×5 mất tác dụng; FID 0 follower vẫn nhận ~1 triệu token/ngày | Thiết kế kinh tế |
 | H-3 | Cao → **đã giảm** | Quỹ DAO nhận phần lớn emission giai đoạn đầu, chi tiêu chỉ cần đa số đơn giản | Thiết kế governance |
 | M-1 | Trung bình | Spam phiên đào làm node không kịp thu thập trong 6 giờ cam kết | Liveness / DoS |
-| M-2 | Trung bình | Một node tự ký hai bản (mất 1 triệu cọc) có thể hủy vĩnh viễn một ngày đã chứng nhận | Griefing |
-| L-1 | Thấp | Key đã bị slash một lần thì bằng chứng ký đôi ở ngày khác bị revert, chữ ký của nó vẫn được tính | Lỗi code |
+| M-2 | Trung bình → **đã sửa** | Một node tự ký hai bản (mất 1 triệu cọc) có thể hủy vĩnh viễn một ngày đã chứng nhận | Griefing |
+| L-1 | Thấp → **đã sửa** | Key đã bị slash một lần thì bằng chứng ký đôi ở ngày khác bị revert, chữ ký của nó vẫn được tính | Lỗi code |
 | L-2 | Thấp | Vote airdrop/burn hằng tháng không có quorum | Thiết kế |
 | L-3 | Thấp | Thời gian vote tính theo số block nên phụ thuộc block time của Base | Cấu hình |
 | I-1 … I-4 | Thông tin | Xem cuối báo cáo | |
@@ -135,6 +135,13 @@ Gói Free của Neynar giới hạn 600 request/phút cho mỗi endpoint. Dù ch
 
 **Cách sửa:** khi chỉ có một chứng nhận, reset `certifiedAt` (cho node khác ký bù để chứng nhận lại trong cửa sổ) thay vì đánh dấu tranh chấp vĩnh viễn. Chỉ giữ `contested` cho trường hợp có hai chứng nhận xung đột.
 
+**Trạng thái (2026-11-22): đã sửa.**
+- Mất ngưỡng sau bằng chứng thì `certifiedAt` về 0, ngày không bị khóa. Key chưa ký vẫn ký bù được để chứng nhận lại, và thời gian review 2 ngày tính lại từ đầu.
+- Trong lúc chưa chứng nhận lại thì `publishAllocations`, `activateDay` và `proveCertifiedSignature` đều bị chặn.
+- `contested` chỉ còn bật khi có hai chứng nhận xung đột.
+- Worker báo trạng thái chờ ký bù thay vì gọi `activateDay` lỗi.
+- Test: scenario ngày 14, key thứ tư ký muộn khôi phục quorum.
+
 ## L-1. Đã slash một lần thì bằng chứng ở ngày khác bị revert
 
 **Vị trí:** `MineCastNodeRegistryV4.slashEquivocation` (dòng 165) revert khi `n.slashed`. `proveEquivocation` gọi nó **trước** khi trừ chữ ký.
@@ -142,6 +149,12 @@ Gói Free của Neynar giới hạn 600 request/phút cho mỗi endpoint. Dù ch
 **Hệ quả:** key ký đôi ở ngày 5 và ngày 6. Chứng minh ngày 5 xong thì bằng chứng ngày 6 revert, nên chữ ký của nó vẫn được tính cho chứng nhận ngày 6, trái với ý đồ thiết kế.
 
 **Cách sửa:** nếu key đã bị slash thì bỏ qua bước slash nhưng vẫn trừ chữ ký khỏi chứng nhận.
+
+**Trạng thái (2026-11-22): đã sửa.**
+- Key đã bị slash thì không slash lại nhưng vẫn bị trừ chữ ký.
+- Chữ ký bị trừ khỏi chứng nhận của ngày và khỏi cả hai bản trong bằng chứng, nên bản chưa được chứng nhận cũng không còn tính phần cọc của nó.
+- `signedAt` bị xóa sau khi trừ, nên mỗi ngày chỉ trừ một lần. Nộp lại bằng chứng mà không còn gì để trừ thì revert `InvalidEvidence`.
+- Test: scenario ký đôi ngày 0 và ngày 1.
 
 ## L-2. Vote airdrop/burn hằng tháng không có quorum
 
@@ -187,6 +200,6 @@ Governor dùng đồng hồ theo số block của staking (43.200 block = 1 ngà
 ## Đề xuất thứ tự sửa
 
 1. **H-1** (worker chọn theo cọc cam kết + event `ReportCommitted`) cùng regression test từ PoC ở trên. Cần làm trước khi deploy, vì đây là lỗi do luật mới thêm hôm nay.
-2. **M-2** và **L-1** (sửa nhỏ trong `proveEquivocation`).
+2. ~~**M-2** và **L-1**~~ đã sửa ngày 2026-11-22.
 3. **M-1** (thu thập sớm và song song trong worker).
 4. **H-2** và **H-3** là quyết định thiết kế của chủ dự án: mẫu số tối thiểu W_MIN, trần chi tiêu DAO.
