@@ -43,6 +43,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     uint256 public totalActiveVoting;
     mapping(uint256 => Epoch) public epochs;
     mapping(uint256 => mapping(address => bool)) public claimed;
+    mapping(address => address) private _delegates;
 
     error InvalidAmount();
     error InvalidPhase();
@@ -50,6 +51,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     event Staked(address indexed account, uint256 amount, uint64 lockedUntil);
     event Withdrawn(address indexed account, uint256 amount);
     event GovernancePowerActivated(address indexed account, uint256 weight);
+    event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
     event FutureRewardsFunded(address indexed funder, uint256 indexed epoch, uint256 amount);
     event EpochSnapshotted(uint256 indexed epoch, uint256 snapshotTime, uint256 totalStaked);
     event EpochFinalized(uint256 indexed epoch, uint256 amount, uint256 claimEnd);
@@ -104,6 +106,27 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
         _checkpoint(msg.sender, stakedBalance[msg.sender]);
         emit GovernancePowerActivated(msg.sender, stakedBalance[msg.sender]);
+    }
+
+    /// @notice Who votes with this account's mature stake (the account itself until it delegates).
+    function delegates(address account) public view returns (address) {
+        address delegatee = _delegates[account];
+        return delegatee == address(0) ? account : delegatee;
+    }
+
+    /// @notice Lend your mature voting power to an active voter; delegate to yourself to take it back.
+    ///         Stake, rewards and withdrawals stay yours. Applies to the governor and monthly DAO votes alike.
+    function delegate(address delegatee) external {
+        if (delegatee == address(0)) revert InvalidAmount();
+        address from = delegates(msg.sender);
+        _delegates[msg.sender] = delegatee;
+        uint256 power = activeVotingBalance[msg.sender];
+        if (from != delegatee && power != 0) {
+            if (block.number > type(uint48).max) revert InvalidPhase();
+            _votes[from].push(uint48(block.number), _votes[from].latest() - uint208(power));
+            _votes[delegatee].push(uint48(block.number), _votes[delegatee].latest() + uint208(power));
+        }
+        emit DelegateChanged(msg.sender, from, delegatee);
     }
 
     /// @notice Late calls are safe: the historical timestamp is fixed, never caller-selected.
@@ -179,12 +202,14 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         return _totalVotes.upperLookup(uint48(blockNumber));
     }
     function _checkpoint(address account, uint256 votingBalance) private {
-        totalActiveVoting = totalActiveVoting - activeVotingBalance[account] + votingBalance;
+        uint256 previous = activeVotingBalance[account];
+        totalActiveVoting = totalActiveVoting - previous + votingBalance;
         activeVotingBalance[account] = votingBalance;
         if (block.number > type(uint48).max || block.timestamp > type(uint48).max || totalStaked > type(uint208).max) revert InvalidPhase();
         _stakes[account].push(uint48(block.timestamp), uint208(stakedBalance[account]));
         _totalStakes.push(uint48(block.timestamp), uint208(totalStaked));
-        _votes[account].push(uint48(block.number), uint208(votingBalance));
+        address delegatee = delegates(account);
+        _votes[delegatee].push(uint48(block.number), _votes[delegatee].latest() - uint208(previous) + uint208(votingBalance));
         _totalVotes.push(uint48(block.number), uint208(totalActiveVoting));
     }
 }

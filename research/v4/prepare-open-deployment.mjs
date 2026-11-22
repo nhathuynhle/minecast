@@ -14,7 +14,9 @@ export function prepareDeployment(config, contracts, currentTime = Math.floor(Da
   const deployer = getAddress(config.deployer), devWallet = getAddress(config.devWallet)
   if (deployer === zeroAddress || devWallet === zeroAddress) throw Error('Set explicit nonzero deployer and devWallet')
   if (!Number.isSafeInteger(config.pendingNonce) || config.pendingNonce < 0) throw Error('Set pendingNonce from the intended chain immediately before deployment')
-  if (!Number.isSafeInteger(config.launchTime) || config.launchTime < currentTime + 8 * 86400) throw Error('Leave at least 8 days to register and activate the first validator before launch')
+  // A Base Sepolia rehearsal may launch sooner; days before the first node activates (7-day join delay) then get no report or rewards.
+  const lead = config.chainId === 84532 ? 0 : 8 * 86400
+  if (!Number.isSafeInteger(config.launchTime) || config.launchTime <= currentTime + lead) throw Error('Leave at least 8 days to register and activate the first validator before launch')
   if (config.launchTime % 86400 !== 0) throw Error('launchTime must be 00:00 UTC so distributor changes align with UTC months')
   const addresses = Object.fromEntries(DEPLOY_NAMES.map((name, i) => [name, getContractAddress({ from: deployer, nonce: BigInt(config.pendingNonce + i) })]))
   const token = addresses.TokenCastOpenV4, staking = addresses.MineCastOpenStakingV4, timelock = addresses.TimelockController
@@ -26,7 +28,7 @@ export function prepareDeployment(config, contracts, currentTime = Math.floor(Da
     MineCastOpenDaoV4: [token, staking, timelock],
     MineCastNodeRegistryV4: [token],
     MineCastOpenDistributorV4: [token, addresses.MineCastNodeRegistryV4, staking, addresses.MineCastOpenDaoV4],
-    MineCastGovernorV4: [staking, timelock, addresses.MineCastNodeRegistryV4, VOTING_DELAY_BLOCKS, VOTING_PERIOD_BLOCKS],
+    MineCastGovernorV4: [staking, timelock, addresses.MineCastNodeRegistryV4, addresses.MineCastOpenDaoV4, VOTING_DELAY_BLOCKS, VOTING_PERIOD_BLOCKS],
   }
   const transactions = DEPLOY_NAMES.map((name, i) => ({ action: 'Deploy ' + name, chainId: config.chainId,
     from: deployer, nonce: config.pendingNonce + i, value: '0', expectedAddress: addresses[name], constructorArgs: args[name],

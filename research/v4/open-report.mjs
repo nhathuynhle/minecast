@@ -3,7 +3,7 @@ import { encodeAbiParameters, hashTypedData, keccak256, concatHex, toHex, zeroHa
 import { followerWeight } from './allocation.mjs'
 import { miningPoolForDay } from './node/bootstrap-model.mjs'
 
-export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.3:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-signer:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M*L-cap*(1+0.2L)'))
+export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.6:premine2100000:decay50bps:cap100bps:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M*L-cap*(1+0.2L):followers-weekly-mon-link7d-account30d'))
 export const types = { DailyReport: [
   { name: 'day', type: 'uint256' }, { name: 'root', type: 'bytes32' },
   { name: 'totalWeight', type: 'uint256' }, { name: 'allocated', type: 'uint256' },

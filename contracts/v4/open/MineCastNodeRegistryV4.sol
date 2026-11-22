@@ -18,6 +18,8 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     uint256 public constant EXIT_DELAY = 30 days;
     /// @notice Report days a key may miss before anyone can remove it from future quorums.
     uint256 public constant INACTIVITY_DAYS = 14;
+    /// @notice Certified days a key may miss (while others keep certifying) before anyone can remove it.
+    uint256 public constant MISSED_CERTIFIED_DAYS = 14;
     uint64 private constant NEVER = type(uint64).max;
 
     struct Node {
@@ -36,6 +38,11 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     mapping(address operator => address[]) private _keysOf;
     Checkpoints.Trace208 private _totalWeight;
     uint256 public totalEscrowed;
+    /// @notice Number of days whose report reached the >2/3 quorum so far.
+    uint64 public certifiedDays;
+    /// @notice certifiedDays when the key last co-signed a certified report, or when it was activated.
+    mapping(address signingKey => uint64) public certifiedMark;
+    mapping(uint256 day => mapping(address signingKey => bool)) public certifiedSigner;
 
     error InvalidNode();
     error InvalidPhase();
@@ -46,6 +53,7 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     event Withdrawn(address indexed signingKey, address indexed operator, uint256 amount);
     event Slashed(address indexed signingKey, uint256 indexed offenseDay, uint256 amount);
     event Ejected(address indexed signingKey, uint256 indexed endDay, uint256 lastActiveDay);
+    event EjectedByGovernance(address indexed signingKey, uint256 indexed endDay);
 
     constructor(TokenCastOpenV4 token_) {
         if (address(token_).code.length == 0) revert InvalidNode();
@@ -71,6 +79,7 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
         uint48 day = _nextDay();
         n.activated = true;
         n.startDay = day;
+        certifiedMark[signingKey] = certifiedDays;
         _totalWeight.push(day, _totalWeight.latest() + n.weight);
         emit Activated(signingKey, day, n.weight);
     }
@@ -89,15 +98,42 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
         if (day > lastSignedDay[signingKey]) lastSignedDay[signingKey] = day;
     }
 
-    /// @notice Anyone may remove a key that signed nothing for INACTIVITY_DAYS report days, so an
-    ///         abandoned bond cannot freeze the >2/3 quorum forever. Not a penalty: escrow returns normally.
+    /// @notice Anyone may remove a key that signed nothing for INACTIVITY_DAYS report days, or that kept
+    ///         signing but joined none of the last MISSED_CERTIFIED_DAYS reports the quorum certified, so an
+    ///         abandoned or dissenting bond cannot erode the >2/3 margin forever. Escrow returns normally.
     /// @dev Day d is signable from dayEnd(d)+30h, i.e. during day d+2; one extra day is grace.
     function ejectInactive(address signingKey) external {
         Node storage n = nodes[signingKey];
         uint256 last = lastSignedDay[signingKey] > n.startDay ? lastSignedDay[signingKey] : n.startDay;
-        if (!n.activated || n.endDay != NEVER || n.slashed || token.currentDay() < last + INACTIVITY_DAYS + 3) revert InvalidPhase();
+        bool silent = token.currentDay() >= last + INACTIVITY_DAYS + 3;
+        bool outvoted = certifiedDays >= certifiedMark[signingKey] + MISSED_CERTIFIED_DAYS;
+        if (!n.activated || n.endDay != NEVER || n.slashed || !(silent || outvoted)) revert InvalidPhase();
         _exit(signingKey, n);
         emit Ejected(signingKey, n.endDay, last);
+    }
+
+    /// @notice Stake governance (the token's timelock) may remove a key it judges to be stalling the quorum,
+    ///         e.g. more than a third of stake signing reports that never certify. Escrow returns normally.
+    function ejectByGovernance(address signingKey) external {
+        if (msg.sender != token.governance() || msg.sender == address(0)) revert Unauthorized();
+        Node storage n = nodes[signingKey];
+        if (n.operator == address(0) || n.endDay != NEVER || n.withdrawn) revert InvalidPhase();
+        _exit(signingKey, n);
+        emit EjectedByGovernance(signingKey, n.endDay);
+    }
+
+    /// @notice The day's distributor reports that `day` reached the quorum for the first time.
+    function noteCertifiedDay(uint256 day) external {
+        if (msg.sender != token.distributorForDay(day) || msg.sender == address(0)) revert Unauthorized();
+        ++certifiedDays;
+    }
+
+    /// @notice The day's distributor credits a key whose signature is on that day's certified report.
+    function recordCertifiedSignature(address signingKey, uint256 day) external {
+        if (msg.sender != token.distributorForDay(day) || msg.sender == address(0)) revert Unauthorized();
+        if (certifiedSigner[day][signingKey]) return;
+        certifiedSigner[day][signingKey] = true;
+        certifiedMark[signingKey] = certifiedDays;
     }
 
     /// @notice Every signing key ever registered by `operator`, including exited ones.

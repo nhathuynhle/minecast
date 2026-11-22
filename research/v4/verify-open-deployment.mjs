@@ -43,6 +43,7 @@ export async function verifyDeployment(client, plan, artifacts) {
   same(await read(governor, 'token'), plan.addresses.MineCastOpenStakingV4, 'governor votes')
   same(await read(governor, 'timelock'), timelock, 'governor timelock')
   same(await read(governor, 'registry'), plan.addresses.MineCastNodeRegistryV4, 'governor registry')
+  same(await read(governor, 'dao'), plan.addresses.MineCastOpenDaoV4, 'governor dao')
   same(await read('TimelockController', 'getMinDelay'), plan.governanceDelay, 'timelock delay')
   same(await read(governor, 'votingDelay'), plan.votingDelay, 'voting delay')
   same(await read(governor, 'votingPeriod'), plan.votingPeriod, 'voting period')

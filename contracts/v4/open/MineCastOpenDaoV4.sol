@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {MineCastOpenStakingV4} from "./MineCastOpenStakingV4.sol";
 import {MineCastCalendar} from "../../v3/MineCastCalendar.sol";
 import {IMineCastStakingV4} from "../IMineCastV4.sol";
 import {TokenCastOpenV4} from "./TokenCastOpenV4.sol";
@@ -15,7 +16,11 @@ interface IMonthlyMiningV4 {
 }
 
 /// @notice Community treasury. Two fixed monthly actions (odd-month airdrop, even-month burn) plus
-///         spending of the unreserved balance by stake governance through its timelock.
+///         spending of the unreserved balance by stake governance through its timelock. A simple-majority
+///         `spend` is capped at 5% of the unreserved treasury per 30-day period; `spendLarge` has no cap,
+///         and the Governor requires two thirds for any action other than `spend`.
+///         Airdrops go only to miners who held at least a third of that month's mining staked when the
+///         round opened; unclaimed and ineligible shares return to the treasury after the claim window.
 contract MineCastOpenDaoV4 is ReentrancyGuard {
     using SafeERC20 for IERC20;
     uint256 public constant VOTE_PERIOD = 7 days;
@@ -23,6 +28,8 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
     uint256 public constant AIRDROP_WINDOW = 90 days;
     uint256 public constant AIRDROP_BPS = 1000;
     uint256 public constant BURN_BPS = 500;
+    uint256 public constant SPEND_PERIOD = 30 days;
+    uint256 public constant SPEND_CAP_BPS = 500;
     TokenCastOpenV4 public immutable token;
     IMineCastStakingV4 public immutable staking;
     address public immutable governance;
@@ -45,11 +52,14 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
     mapping(uint256 month => Round) public rounds;
     mapping(uint256 month => mapping(address => bool)) public voted;
     mapping(uint256 month => mapping(address => bool)) public collected;
+    mapping(uint256 period => uint256) public spentInPeriod;
 
     error InvalidRound();
     error InvalidVote();
     error NothingToClaim();
     error Unauthorized();
+    error NotEligible();
+    error SpendCapExceeded();
     event Opened(uint256 indexed month, uint256 miningMonth, bool airdrop, uint256 budget, uint256 snapshotBlock);
     event VoteCast(uint256 indexed month, address indexed voter, bool yes, uint256 weight);
     event Settled(uint256 indexed month, bool passed);
@@ -128,6 +138,8 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         uint256 share = IMonthlyMiningV4(r.mining).claimedByMonth(r.miningMonth, msg.sender);
         amount = r.budget * share / r.mined;
         if (amount == 0) revert NothingToClaim();
+        // Stake is read at the round's opening time, fixed before anyone knew the exact moment.
+        if (MineCastOpenStakingV4(address(staking)).stakeAtTime(msg.sender, r.voteEnd - VOTE_PERIOD) * 3 < share) revert NotEligible();
         collected[month][msg.sender] = true;
         r.remaining -= amount;
         reserved -= amount;
@@ -147,8 +159,25 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
 
     /// @notice Stake governance funds work (grants, node incentives, liquidity) from the unreserved
     ///         treasury. Monthly airdrop/burn reservations can never be spent this way.
+    /// @notice Ordinary spending by simple majority, capped per 30-day period.
     function spend(address to, uint256 amount) external nonReentrant {
         if (msg.sender != governance) revert Unauthorized();
+        uint256 period = block.timestamp / SPEND_PERIOD;
+        uint256 already = spentInPeriod[period];
+        // The period's starting unreserved balance is what is unreserved now plus what this period already spent.
+        uint256 unreserved = token.balanceOf(address(this)) - reserved;
+        if ((already + amount) * 10_000 > (unreserved + already) * SPEND_CAP_BPS) revert SpendCapExceeded();
+        spentInPeriod[period] = already + amount;
+        _spend(to, amount);
+    }
+
+    /// @notice Uncapped spending, e.g. moving the treasury; only reachable through a two-thirds Governor vote.
+    function spendLarge(address to, uint256 amount) external nonReentrant {
+        if (msg.sender != governance) revert Unauthorized();
+        _spend(to, amount);
+    }
+
+    function _spend(address to, uint256 amount) private {
         if (to == address(0) || amount == 0 || amount > token.balanceOf(address(this)) - reserved) revert InvalidRound();
         IERC20(address(token)).safeTransfer(to, amount);
         emit Spent(to, amount);

@@ -9,20 +9,32 @@ import {GovernorVotesQuorumFraction} from "@openzeppelin/contracts/governance/ex
 import {GovernorTimelockControl} from "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MineCastNodeRegistryV4} from "./MineCastNodeRegistryV4.sol";
+import {MineCastOpenDaoV4} from "./MineCastOpenDaoV4.sol";
 
 /// @notice Stake governance for protocol evolution. Votes = mature stake in MineCastOpenStakingV4 (block clock).
 /// @dev Proposers: anyone with >= proposalThreshold mature stake, or the operator of a currently active node.
 ///      Everything passes through a TimelockController (14 days at deployment) that owns treasury spending
 ///      and future-month distributor scheduling. Delay, period, threshold and quorum are themselves governable.
+///      Guards: quorum = max(10% of voting power, min(1% of released supply, half of voting power)); any proposal
+///      that is not purely a treasury spend needs two thirds of For+Against; one live proposal per proposer.
 contract MineCastGovernorV4 is Governor, GovernorSettings, GovernorCountingSimple, GovernorVotes,
     GovernorVotesQuorumFraction, GovernorTimelockControl
 {
     MineCastNodeRegistryV4 public immutable registry;
+    address public immutable dao;
+    uint256 public constant QUORUM_FLOOR_BPS = 100; // 1% of released supply, fixed when the proposal is made
+    mapping(uint256 proposalId => uint256) public quorumFloor;
+    mapping(uint256 proposalId => bool) public needsSupermajority;
+    mapping(address proposer => uint256) public latestProposalId;
+
+    error ProposerHasLiveProposal(address proposer, uint256 proposalId);
 
     /// @dev Voting runs on the stake block clock, so delay/period are block counts for the target chain
     ///      (Base, 2-second blocks: 43,200 = 1 day, 302,400 = 7 days). Governance can retune them later.
-    constructor(IVotes staking_, TimelockController timelock_, MineCastNodeRegistryV4 registry_, uint48 votingDelay_, uint32 votingPeriod_)
+    constructor(IVotes staking_, TimelockController timelock_, MineCastNodeRegistryV4 registry_, address dao_,
+        uint48 votingDelay_, uint32 votingPeriod_)
         Governor("MineCast Governor")
         GovernorSettings(votingDelay_, votingPeriod_, 1_000_000 ether)
         GovernorVotes(staking_)
@@ -30,6 +42,44 @@ contract MineCastGovernorV4 is Governor, GovernorSettings, GovernorCountingSimpl
         GovernorTimelockControl(timelock_)
     {
         registry = registry_;
+        dao = dao_;
+    }
+
+    /// @notice For+Abstain votes this proposal needs. The floor stops a small staked minority from deciding alone;
+    ///         capping it at half of all voting power keeps governance able to act when little is staked.
+    function proposalQuorum(uint256 proposalId) public view returns (uint256) {
+        uint256 snapshot = proposalSnapshot(proposalId);
+        return Math.max(quorum(snapshot), Math.min(quorumFloor[proposalId], token().getPastTotalSupply(snapshot) / 2));
+    }
+
+    function _propose(address[] memory targets, uint256[] memory values, bytes[] memory calldatas,
+        string memory description, address proposer) internal override returns (uint256 proposalId)
+    {
+        uint256 last = latestProposalId[proposer];
+        if (last != 0) {
+            ProposalState s = state(last);
+            if (s == ProposalState.Pending || s == ProposalState.Active) revert ProposerHasLiveProposal(proposer, last);
+        }
+        proposalId = super._propose(targets, values, calldatas, description, proposer);
+        latestProposalId[proposer] = proposalId;
+        quorumFloor[proposalId] = registry.token().releasedSupply() * QUORUM_FLOOR_BPS / 10_000;
+        for (uint256 i; i < targets.length; ++i) {
+            // Only a plain DAO spend counts as ordinary business; rule changes and governance edits need 2/3.
+            if (targets[i] != dao || values[i] != 0 || calldatas[i].length < 4 || bytes4(calldatas[i]) != MineCastOpenDaoV4.spend.selector) {
+                needsSupermajority[proposalId] = true;
+                break;
+            }
+        }
+    }
+
+    function _quorumReached(uint256 proposalId) internal view override(Governor, GovernorCountingSimple) returns (bool) {
+        (, uint256 forVotes, uint256 abstainVotes) = proposalVotes(proposalId);
+        return forVotes + abstainVotes >= proposalQuorum(proposalId);
+    }
+
+    function _voteSucceeded(uint256 proposalId) internal view override(Governor, GovernorCountingSimple) returns (bool) {
+        (uint256 againstVotes, uint256 forVotes,) = proposalVotes(proposalId);
+        return forVotes > againstVotes && (!needsSupermajority[proposalId] || forVotes * 3 >= (forVotes + againstVotes) * 2);
     }
 
     /// @notice The operator of an active node may propose without the stake threshold.

@@ -5,8 +5,8 @@ import { DAY, monthAt, monthStart, previousMonth, type MiningDay } from "./state
 
 export async function verifyV4(client: PublicClient, config: V4Config, blockNumber?: bigint) {
   if (await client.getChainId() !== config.chainId) throw Error("RPC network does not match this V4 deployment.")
+  // The configured distributor may be a past one after a governance upgrade; it still settles its own days.
   const r = await Promise.all([
-    client.readContract({ address: config.token, abi: tokenAbi, functionName: "distributor", blockNumber }),
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "bootstrapAdmin", blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "token", blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "staking", blockNumber }),
@@ -16,7 +16,7 @@ export async function verifyV4(client: PublicClient, config: V4Config, blockNumb
     ...[config.staking, config.dao, config.registry].map(address => client.readContract({ address, abi: stakingAbi, functionName: "token", blockNumber })),
     client.readContract({ address: config.dao, abi: daoAbi, functionName: "staking", blockNumber }),
   ])
-  const expected = [config.distributor, zeroAddress, config.token, config.staking, config.dao, config.registry, V4_POLICY_HASH, config.token, config.token, config.token, config.staking]
+  const expected = [zeroAddress, config.token, config.staking, config.dao, config.registry, V4_POLICY_HASH, config.token, config.token, config.token, config.staking]
   if (r.some((value, i) => value.toLowerCase() !== expected[i].toLowerCase())) throw Error("V4 contract links or reward policy do not match. Transactions are disabled.")
 }
 
@@ -33,15 +33,18 @@ export async function readV4Network(client: PublicClient, config: V4Config, acco
     client.readContract({ address: config.dao, abi: daoAbi, functionName: "reserved", blockNumber }),
   ])
   const day = block.timestamp < launch ? 0n : (block.timestamp - launch) / DAY
-  const [pool, totalBond, balance, boostLevel, boostUnlocked] = await Promise.all([
+  const [pool, totalBond, balance, boostLevel, boostUnlocked, currentDistributor] = await Promise.all([
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "dailyEmissionForDay", args: [day], blockNumber }),
     client.readContract({ address: config.registry, abi: registryAbi, functionName: "totalWeightAt", args: [day], blockNumber }),
     account ? client.readContract({ address: config.token, abi: tokenAbi, functionName: "balanceOf", args: [account], blockNumber }) : 0n,
     account ? client.readContract({ address: config.token, abi: tokenAbi, functionName: "boostLevel", args: [account], blockNumber }) : 0,
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "boostUnlockedLevel", blockNumber }),
+    client.readContract({ address: config.token, abi: tokenAbi, functionName: "distributor", blockNumber }),
   ])
   return { blockNumber, timestamp: block.timestamp, launch, day, totalSupply, cumulativeMinted, maxSupply, totalStaked, rewardLiability, treasuryBalance, reserved, pool, totalBond, balance,
-    boostLevel: Number(boostLevel), boostUnlocked: Number(boostUnlocked) }
+    boostLevel: Number(boostLevel), boostUnlocked: Number(boostUnlocked),
+    // Stake governance moved mining to a new distributor: this build can settle old days but must not start sessions.
+    currentDistributor, moved: currentDistributor.toLowerCase() !== config.distributor.toLowerCase() }
 }
 export type V4Network = Awaited<ReturnType<typeof readV4Network>>
 
@@ -98,10 +101,14 @@ export async function readV4Dao(client: PublicClient, config: V4Config, network:
     client.readContract({ address: config.dao, abi: daoAbi, functionName: "collected", args: [month, who], blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "monthFinalized", args: [previous], blockNumber }),
   ])
-  const [power, share] = await Promise.all([
+  const openedAt = r[1] > 0n ? r[1] - 7n * DAY : 0n
+  const [power, share, stakedAtOpen] = await Promise.all([
     r[1] > 0n && r[0] < blockNumber ? client.readContract({ address: config.staking, abi: stakingAbi, functionName: "votingPowerAt", args: [who, r[0]], blockNumber }) : 0n,
     r[7] > 0n ? client.readContract({ address: r[5], abi: distributorAbi, functionName: "claimedByMonth", args: [r[6], who], blockNumber }) : 0n,
+    openedAt > 0n && openedAt < network.timestamp ? client.readContract({ address: config.staking, abi: stakingAbi, functionName: "stakeAtTime", args: [who, openedAt], blockNumber }) : 0n,
   ])
+  // Airdrops require a third of the prior month's mining to be staked when the round opened.
+  const eligible = share > 0n && stakedAtOpen * 3n >= share
   const date = new Date(Number(network.timestamp) * 1000).getUTCDate()
   return { month, previous, snapshot: r[0], voteEnd: r[1], claimEnd: r[2], airdrop: r[1] > 0n ? r[3] : month % 2n === 1n,
     settled: r[4], budget: r[8], remaining: r[9], yes: r[10], no: r[11], voted, collected, power, monthFinalized,
@@ -109,6 +116,7 @@ export async function readV4Dao(client: PublicClient, config: V4Config, network:
     canFinalizeMonth: !monthFinalized && monthStart(month) > network.launch && network.timestamp >= monthStart(month) + 16n * DAY,
     canOpen: month === monthAt(network.timestamp) && date >= 8 && date <= 28 && monthFinalized && r[1] === 0n,
     canSettle: r[1] > 0n && !r[4] && network.timestamp >= r[1] + (r[10] > r[11] ? 3n * DAY : 0n),
-    claimable: account && r[2] > network.timestamp && !collected && r[7] > 0n ? r[8] * share / r[7] : 0n }
+    mined: share, eligible,
+    claimable: account && eligible && r[2] > network.timestamp && !collected && r[7] > 0n ? r[8] * share / r[7] : 0n }
 }
 export type V4Dao = Awaited<ReturnType<typeof readV4Dao>>

@@ -6,7 +6,8 @@ import { createTestClient, http, publicActions, walletActions, parseEther, kecca
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
 import { compileOpen } from '../research/v4/compile-open.mjs'
-import { buildOpenReport, typedReport } from '../research/v4/open-report.mjs'
+import { buildOpenReport, openDigest, typedReport } from '../research/v4/open-report.mjs'
+import { commitmentOf } from '../research/v4/node/open-worker.mjs'
 import { loadModule } from './v4-test-loader.mjs'
 import { checkBrowser } from './v4-browser-check.mjs'
 
@@ -83,7 +84,11 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     const bundle = buildOpenReport({ chainId: 84532, distributor: mining.address, day, launchTime: launch,
       sourceHash: await c.readContract({ ...mining, functionName: 'sessionsHash', args: [day] }),
       entries: [{ fid: 42n, wallet: miner, followers: 2000n, nodeWork: false, castHash, startedAt, level }] })
-    await at(launch + (day + 2n) * DAY + 6n * 3600n)
+    await at(launch + (day + 2n) * DAY + 6n * 3600n) // phase 1: the node commits to the report it built
+    await c.setBalance({ address: key.address, value: parseEther('1') })
+    await c.waitForTransactionReceipt({ hash: await c.writeContract({ ...mining, functionName: 'commitReport', account: key,
+      args: [day, commitmentOf(openDigest(84532, mining.address, bundle.report), key.address)] }) })
+    await at(launch + (day + 2n) * DAY + 12n * 3600n) // phase 2: sign
     await send(mining, 'submitSignatures', [bundle.report, [key.address], [await key.signTypedData(typedReport(84532, mining.address, bundle.report))]])
     await send(mining, 'publishAllocations', [day, bundle.entries, bundle.proofs])
     const n = await network(), d = await readApp.readV4Day(c, config, n, day, miner)
@@ -117,7 +122,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     assert.equal(n.balance, first.amounts[0]); assert.equal(miningPhase(d, n.timestamp), 'claimed')
     await action({ kind: 'claim', day: 0n }, 'error')
   })
-  const amount = parseEther('1000')
+  const amount = parseEther('400000') // also covers a third of the February mining for the March airdrop
   await t.test('stake uses exact approval, total staked and 30-day lock; withdraw cannot bypass it', async () => {
     const r = await action({ kind: 'stake', amount })
     assert.equal(r.updates.filter(x => x.status === 'confirmed').length, 2)

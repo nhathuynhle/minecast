@@ -235,7 +235,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
             <p className="v4-muted">Estimate from followers and your burn-boost level across MineCast sessions. Node bonuses, other miners' boosts and final validation may change it. Not claimable yet.</p>
           </div>}
           {phase === "review" && <p className="v4-muted">Allocations are under review. Claims open after the report is activated.</p>}
-          <dl className="v4-stats"><Stat label={`Pool · day ${String(dayData?.day ?? network.day)}`}>{tokens(dayData?.pool ?? network.pool, 0)}</Stat><Stat label="Max per miner">{tokens((dayData?.pool ?? network.pool) / 100n, 0)}</Stat></dl>
+          <dl className="v4-stats"><Stat label={`Pool · day ${String(dayData?.day ?? network.day)}`}>{tokens(dayData?.pool ?? network.pool, 0)}</Stat><Stat label="Your daily cap">{tokens((dayData?.pool ?? network.pool) * BigInt(5 + network.boostLevel) / 500n, 0)}</Stat></dl>
           <div className="v4-live" data-testid="live-mining-stats"><dl className="v4-stats"><Stat label="Active miners">{live.data ? live.data.activeMiners.toLocaleString("en-US") : "—"}</Stat><Stat label="Miners in this cohort">{live.data ? live.data.cohortMiners.toLocaleString("en-US") : "—"}</Stat></dl>
             <p className="v4-muted">{live.data ? `${statsFresh ? "Updated" : "Last known"} ${new Date(live.data.observedAt).toLocaleTimeString()}` : live.unavailable ? "Live counts unavailable" : "Loading live counts…"} · MineCast sessions only · refresh ~20s</p>
             {live.data && live.data.estimatedMiners < live.data.cohortMiners && <p className="v4-muted">Some follower observations are missing. Reward estimates will stay unavailable until the cohort data is complete.</p>}
@@ -248,15 +248,16 @@ function ConnectedV4({ config }: { config: V4Config }) {
           {sessionError && <p role="alert" className="v4-error">{sessionError}</p>}
           <label className="sr-only" htmlFor="v4-cast">Suggested cast</label><textarea id="v4-cast" value={castText} maxLength={1024} onChange={e => setCastText(e.target.value)} rows={3} />
           <p className="v4-muted">Edit the text or add images in Farcaster before posting.</p>
-          <Button disabled={locked || !identity || !eligible || !!castLink} onClick={() => void postCast(false)}><Send size={17} />Post cast & start 24h</Button>
+          {network.moved && <p className="v4-muted">Stake governance moved mining to a new contract ({network.currentDistributor}). This app version still settles earlier days; update the app to keep mining.</p>}
+          <Button disabled={locked || !identity || !eligible || !!castLink || network.moved} onClick={() => void postCast(false)}><Send size={17} />Post cast & start 24h</Button>
           <details open={!!castLink}><summary>Already posted? Verify your cast</summary><label>Cast link or hash<input value={castLink} onChange={e => { setCastLink(e.target.value); save(castKey, e.target.value) }} placeholder="https://farcaster.xyz/…" /></label>
-            <Button disabled={locked || !identity || !castLink.trim()} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
+            <Button disabled={locked || !identity || !castLink.trim() || network.moved} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
           <details><summary>When can I claim?</summary><p>Each cohort starts at the contract's launch time plus whole 24-hour days, not a fixed 06:00 UTC cutoff. Your starting cohort determines your pool.</p>
-            {dayData && <p>Cohort closes {date(dayData.end)}. Reports can be submitted from {date(dayData.end + DAY + dayData.workWindow)}.</p>}
+            {dayData && <p>Cohort closes {date(dayData.end)}. Nodes commit to their own report from {date(dayData.end + DAY + dayData.workWindow)} and sign from 6 hours later.</p>}
             <p>A session lasts 24 hours. Nodes then publish the daily report and complete a 48-hour review. Your claim window lasts 7 days after the cohort is activated.</p>
             <p>Estimates refresh throughout every hour as cohort participation changes. Finished sessions remain in the cohort denominator. Other apps may submit more miners, so these app counts are not a network-wide reward guarantee.</p></details>
         </Card>
-        <Card title="Permanent boost"><p className="v4-muted">Level {network.boostLevel} · ×{(1 + network.boostLevel * 0.2).toFixed(1)} weight and daily cap for sessions you open from now on.</p>
+        <Card title="Permanent boost"><p className="v4-muted">Level {network.boostLevel} · ×{(1 + network.boostLevel * 0.2).toFixed(1)} weight and daily cap for sessions you open from now on, applied on top of the ×100 base cap.</p>
           {network.boostLevel < 9 && <><p>Level {network.boostLevel + 1} burns {((network.boostLevel + 1) * 1_000_000).toLocaleString("en-US")} TOKENCAST forever{network.boostLevel >= network.boostUnlocked ? `; it unlocks once ${(network.boostLevel + 1) * 10}% of mining is released` : ""}.</p>
             <Button secondary disabled={locked || !account || network.boostLevel >= network.boostUnlocked || network.balance < BigInt(network.boostLevel + 1) * 10n ** 24n} onClick={() => void transact({ kind: "buyBoost" })}>Burn for level {network.boostLevel + 1}</Button></>}
         </Card>
@@ -264,8 +265,8 @@ function ConnectedV4({ config }: { config: V4Config }) {
       {tab === "network" && <>
         <Card title="Open network"><dl className="v4-stats"><Stat label="Active validator bond">{tokens(network.totalBond, 0)}</Stat><Stat label="Minimum network bond">1,000,000</Stat><Stat label="Certificate threshold">More than ⅔</Stat><Stat label="Current day">{String(network.day)}</Stat></dl>
           <p>Mining reports use signatures weighted by bonded TOKENCAST. A single operator can bootstrap the network; offline stake still counts toward the threshold.</p></Card>
-        <Card title="Reward policy"><dl className="v4-stats"><Stat label="Daily pool decline">0.5%</Stat><Stat label="Per-miner cap">1% of daily pool</Stat><Stat label="Node multiplier">×5 · combined cap ×100</Stat><Stat label="Unallocated surplus">5% staking · 95% DAO</Stat></dl>
-          <p className="v4-muted">Follower and node-work inputs are certified by the node quorum. The allocation formula is enforced onchain.</p></Card>
+        <Card title="Reward policy"><dl className="v4-stats"><Stat label="Daily pool decline">0.5%</Stat><Stat label="Per-miner cap">1% of daily pool · up to 2.8% with burn boost</Stat><Stat label="Node multiplier">×5 · combined cap ×100</Stat><Stat label="Burn boost">×1.2–×2.8 on top of the ×100 cap</Stat><Stat label="Unallocated surplus">5% staking · 95% DAO</Stat></dl>
+          <p className="v4-muted">Follower and node-work inputs are certified by the node quorum. Follower tiers refresh every Monday 00:00 UTC. The allocation formula is enforced onchain.</p></Card>
       </>}
       {tab === "token" && <>
         <Card title="TOKENCAST"><div className="v4-reward">{account ? tokens(network.balance) : "—"} <small>in your wallet</small></div>
@@ -294,10 +295,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
             <div className="v4-actions"><Button disabled={locked || dao.voted || dao.power === 0n || timestamp >= dao.voteEnd} onClick={() => void transact({ kind: "vote", month: dao.month, yes: true })}>{dao.voted ? "Vote recorded" : "Yes"}</Button><Button secondary disabled={locked || dao.voted || dao.power === 0n || timestamp >= dao.voteEnd} onClick={() => void transact({ kind: "vote", month: dao.month, yes: false })}>No</Button></div>
             {dao.voteEnd > 0n && <p className="v4-muted">Voting ends {date(dao.voteEnd)}. Yes must exceed No; a passing result waits another 72 hours.</p>}
             {dao.claimable > 0n && <Button disabled={locked} onClick={() => void transact({ kind: "claimAirdrop", month: dao.month })}>Claim {tokens(dao.claimable)} airdrop</Button>}
+            {dao.airdrop && dao.voteEnd > 0n && dao.mined > 0n && !dao.eligible && <p className="v4-muted">Not eligible: you had less than one third of last month's mining ({tokens(dao.mined / 3n)}) staked when this round opened.</p>}
             {dao.canSettle && <Button secondary disabled={locked} onClick={() => void transact({ kind: "settleVote", month: dao.month })}>Execute vote result</Button>}
             {dao.canFinalizeMonth && <Button secondary disabled={locked} onClick={() => void transact({ kind: "finalizeMonth", timestamp: monthStart(dao.month) })}>Close prior mining month</Button>}
             {dao.canOpen && <Button secondary disabled={locked} onClick={() => void transact({ kind: "openVote" })}>Open this month's vote</Button>}
-            <details><summary>Voting schedule & treasury</summary><p>Odd months: miner airdrop. Even months: burn. A round can open after the prior month closes, normally from the 11th through the 21st UTC. Stake for 30 days and activate your power before the round opens.</p>
+            <details><summary>Voting schedule & treasury</summary><p>Odd months: miner airdrop, for miners who keep at least one third of what they mined last month staked when the round opens. Even months: burn. A round can open after the prior month closes, normally from the 11th through the 21st UTC. Stake for 30 days and activate your power before the round opens.</p>
               <dl className="v4-stats"><Stat label="Treasury balance">{tokens(network.treasuryBalance)}</Stat><Stat label="Reserved for votes">{tokens(network.reserved)}</Stat></dl>
               {dao.claimEnd > 0n && <p className="v4-muted">Airdrop claims end {date(dao.claimEnd)}.</p>}
               {dao.claimEnd > 0n && timestamp >= dao.claimEnd && dao.remaining > 0n && <Button secondary disabled={locked} onClick={() => void transact({ kind: "releaseAirdrop", month: dao.month })}>Release expired airdrop reserve</Button>}</details>
