@@ -27,12 +27,14 @@ export async function gateV4(config: V4Config, sessions: V4Session[]) {
   const network = await readV4Network(client, config)
   if (network.timestamp < network.launch) return { eligible: false, reason: "V4 mining has not launched yet.", network }
   if (network.pool === 0n) return { eligible: false, reason: "The mining emission schedule has ended.", network }
-  if (network.totalBond < 1000000n * 10n ** 18n) return { eligible: false, reason: "Waiting for an active validator bond before starting mining.", network }
+  const noValidator = network.totalBond < 1000000n * 10n ** 18n
+  // shortcut: Base Sepolia lets people try the flow before the first validator is active; those days can never pay.
+  if (noValidator && config.chainId !== 84532) return { eligible: false, reason: "Waiting for an active validator bond before starting mining.", network }
   const latest = sessions[0]
   if (latest) {
     if (BigInt(latest.day) === network.day) return { eligible: false, reason: "This account already has a session in today's cohort. The next one opens at 00:00 UTC.", network }
     // Earlier rewards stay claimable for 7 days after activation; they never block the next day's session.
   }
-  return { eligible: true, reason: "Ready to cast.", network }
+  return { eligible: true, reason: noValidator ? "Testnet trial: no validator is active yet, so today's session is recorded but earns nothing." : "Ready to cast.", network }
 }
 export function identityV4(config: V4Config) { return { protocol: "open-v4-quorum-1", chainId: config.chainId, distributor: config.distributor } }
