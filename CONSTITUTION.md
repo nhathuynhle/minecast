@@ -15,16 +15,18 @@ These are fixed in `TokenCastOpenV4` and can never be changed by anyone, includi
 
 ## 2. What stakers can change
 
-Votes come from mature stake in `MineCastOpenStakingV4`: tokens staked, locked for 30 days, then activated. A staker may delegate their votes to another address with `delegate` and keep their stake and rewards.
+Votes come from stake held for at least 30 days in `MineCastOpenStakingV4`; there is no activation step. A staker may delegate their votes to another address with `delegate` and keep their stake and rewards.
 
 | Change | How | Passing rule |
 |---|---|---|
-| Mining rules (follower tiers, node bonus, bot filter, tolerance, report format) | A new distributor contract takes over whole future UTC months (`token.scheduleDistributor`) | Two thirds of For+Against |
+| Mining rules (follower and engagement tiers, duplicate-cast rule, node bonus, bot filter, tolerance, report format) | A new distributor contract takes over whole future UTC months (`token.scheduleDistributor`) | Two thirds of For+Against |
 | Node rules (bond, delays, ejection) | The new distributor points to a new registry | Two thirds |
 | Removing a node that stalls the quorum | `registry.ejectByGovernance` (escrow is returned, not slashed) | Two thirds |
 | Governance settings or the Governor itself | Governor settings, or timelock roles moved to a new Governor | Two thirds |
 | Treasury spending (grants, node costs, audits, liquidity) | `dao.spend`, at most 5% of the unreserved treasury per 30-day period | Simple majority |
-| Larger spending, including moving the treasury | `dao.spendLarge` from the unreserved treasury | Two thirds |
+| Larger spending, including moving the treasury | `dao.spendLarge`: at most 20% of the unreserved treasury at once, refilling over 90 days, with a deadline | Two thirds |
+
+Voting power is stake held for at least 30 days, with no activation step. A top-up never removes power already earned; a withdrawal removes it at once; changing delegate needs an unlocked stake, locks it again for 30 days, and the new voter gains the power after those 30 days.
 
 Every proposal must also reach quorum: For + Abstain must be at least the larger of 10% of all voting power and the smaller of 1% of the supply released when the proposal was made and half of all voting power.
 
@@ -50,19 +52,23 @@ A rule change should start on the first day of a month at least 4 weeks after su
 ## 5. Nodes
 
 - Anyone can run a node by bonding at least 1,000,000 TOKENCAST. Activation is possible 7 days after registration, and the node counts from the following day.
-- A report becomes final when keys holding more than two thirds of active bond sign the same report, and keys holding more than one third of active bond had committed to exactly that report on their own in the first phase. Co-signing alone can never finalize a report. The one exception is a key that alone holds more than two thirds of active bond: nobody can outvote it, so it may finalize without a first-phase commitment, and a lone node that misses the commit phase does not lose the day. Whoever holds that much bond decides the daily reports, but still cannot touch supply, emission, the treasury or governance.
+- A report becomes final when keys holding more than two thirds of active bond sign the same report, and keys holding more than one third of active bond had committed to exactly that report on their own in the first phase. Commitments carry a secret salt and are revealed when the second phase starts; the first phase lasts at least 30 minutes after the 00:00 UTC close and stays open until someone reveals or signs. Co-signing alone can never finalize a report. The one exception is a key that alone holds more than two thirds of active bond: nobody can outvote it, so it may finalize without a first-phase commitment, and a lone node that misses the commit phase does not lose the day. Whoever holds that much bond decides each daily report alone: who is paid from that day's emission and how much, within the daily and per-wallet caps. It cannot mint beyond the caps, move anyone's tokens or change these rules, but the tokens it directs can be staked and voted. While one operator holds that share, MineCast depends on trusting that operator; anyone can check each certified day against Farcaster with `research/v4/node/check-day.mjs`, and the network becomes trustless only once no key holds more than a third of the bond.
 - Each report window has two phases. A day's cohort closes at 00:00 UTC. For the first 30 minutes after the close, nodes may only commit to a hash of the report they built themselves. Afterwards they reveal it with `announceReport` and co-sign the earliest announcement that matches their own data within one follower tier.
-- The node bonus (×5 for the operator's own mining) is earned only by a key whose own commitment matched the certified report, so copying other nodes earns nothing.
+- The node bonus (×3 for the operator's own mining) is earned only by a key whose own commitment matched the certified report, so copying other nodes earns nothing. It is judged on facts fixed at the day's cutoff, so later evidence cannot void a certified day.
 - A key that signs two different reports for the same day loses its bond.
+- A node's voting power is its bond. An operator adds power only by bonding more tokens under another key.
+- An operator may replace a signing key (`rotateKey`). The new key carries the same bond from the next day, without the join delay, and an equivocation proven against the old key still burns that bond.
 - A key that signs nothing for 14 report days, or joins none of the last 14 certified reports, can be removed by anyone. Its escrow is returned after the exit delay.
+- If a day still has no quorum one day after it closes while more than half of that day's bond signed one report, every key off that report is behind. A key behind on 3 days in a row is removed (escrow returned), so blocking the network takes more bond than the side being blocked.
 - Nodes may read Farcaster data from their own Snapchain node or from a hosted Snapchain API. Running your own Snapchain is preferred.
+- A session earns only with a cast posted at most 30 minutes before the session opens. A cast backs sessions on one UTC day only; the distributor refuses it on any other day.
 
 ## 6. Treasury and monthly rounds
 
 - Mining surplus goes 5% to stakers and 95% to the DAO treasury. Rewards are shared as if at least 10,000 weight units mined each day (one unit earns at most 0.01% of the day's pool), so while few miners mine, the unshared part is surplus too.
-- The treasury has no owner key. Only the governance timelock can spend from it. A simple majority can spend at most 5% of the unreserved treasury in each 30-day period; anything above that needs two thirds.
+- The treasury has no owner key. Only the governance timelock can spend from it. A simple majority can spend at most 5% of the unreserved treasury, a credit that refills linearly over 30 days; anything above that needs two thirds and at most 20% at once, a credit that refills linearly over 90 days. Every spend carries a deadline and cannot run after it.
 - Each month stakers vote on a fixed action: odd months an airdrop to the previous month's miners, even months a burn.
-- An airdrop share is paid only to miners who had at least one third of that month's mining staked when the round opened. Unclaimed and ineligible shares return to the treasury after 90 days.
+- An airdrop share is paid only to miners who had at least one third of that month's mining staked at the end of the 16th day (UTC) of the voting month, a fixed moment before any round can open. Unclaimed and ineligible shares return to the treasury after 90 days.
 
 ## 7. The founder
 

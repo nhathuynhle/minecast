@@ -48,15 +48,16 @@ const STATES = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queue
 const SUPPORT = { against: 0, for: 1, abstain: 2 }
 
 /** Turn a human-readable proposal into Governor arguments. Unknown action kinds are rejected. */
-export function buildProposal({ description, actions }, { dao, token }) {
+// Spends expire: 45 days covers the 1-day delay, 7-day vote and 14-day timelock with three weeks to spare.
+export function buildProposal({ description, actions }, { dao, token, deadline = BigInt(Math.floor(Date.now() / 1000)) + 45n * 86_400n }) {
   if (typeof description !== 'string' || !description.trim() || !Array.isArray(actions) || !actions.length) throw Error('Need a description and at least one action')
   const calls = actions.map(action => {
     const [kind, a] = Object.entries(action)[0] ?? []
-    if (kind === 'spend') return [dao, encodeFunctionData({ abi: parseAbi(['function spend(address to, uint256 amount)']),
-      args: [getAddress(a.to), parseEther(String(a.amount))] })]
-    // spendLarge has no 5%-per-30-days cap, so the Governor counts it as a rule change (two thirds).
-    if (kind === 'spendLarge') return [dao, encodeFunctionData({ abi: parseAbi(['function spendLarge(address to, uint256 amount)']),
-      args: [getAddress(a.to), parseEther(String(a.amount))] })]
+    if (kind === 'spend') return [dao, encodeFunctionData({ abi: parseAbi(['function spend(address to, uint256 amount, uint256 deadline)']),
+      args: [getAddress(a.to), parseEther(String(a.amount)), deadline] })]
+    // spendLarge (above the 5% credit) is not a plain spend, so the Governor needs two thirds for it.
+    if (kind === 'spendLarge') return [dao, encodeFunctionData({ abi: parseAbi(['function spendLarge(address to, uint256 amount, uint256 deadline)']),
+      args: [getAddress(a.to), parseEther(String(a.amount)), deadline] })]
     if (kind === 'scheduleDistributor') return [token, encodeFunctionData({ abi: parseAbi(['function scheduleDistributor(address distributor, uint256 startDay)']),
       args: [getAddress(a.distributor), BigInt(a.startDay)] })]
     if (kind === 'call') return [getAddress(a.target), encodeFunctionData({ abi: [parseAbiItem(a.signature)], args: a.args ?? [] })]

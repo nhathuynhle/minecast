@@ -13,7 +13,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MineCastNodeRegistryV4} from "./MineCastNodeRegistryV4.sol";
 import {MineCastOpenDaoV4} from "./MineCastOpenDaoV4.sol";
 
-/// @notice Stake governance for protocol evolution. Votes = mature stake in MineCastOpenStakingV4 (block clock).
+/// @notice Stake governance for protocol evolution. Votes = stake held 30 days in MineCastOpenStakingV4 (timestamp clock).
 /// @dev Proposers: anyone with >= proposalThreshold mature stake, or the operator of a currently active node.
 ///      Everything passes through a TimelockController (14 days at deployment) that owns treasury spending
 ///      and future-month distributor scheduling. Delay, period, threshold and quorum are themselves governable.
@@ -33,8 +33,8 @@ contract MineCastGovernorV4 is Governor, GovernorSettings, GovernorCountingSimpl
 
     error ProposerHasLiveProposal(address proposer, uint256 proposalId);
 
-    /// @dev Voting runs on the stake block clock, so delay/period are block counts for the target chain
-    ///      (Base, 2-second blocks: 43,200 = 1 day, 302,400 = 7 days). Governance can retune them later.
+    /// @dev Voting runs on the stake contract's timestamp clock, so delay and period are in seconds
+    ///      (86,400 = 1 day, 604,800 = 7 days). Governance can retune them later.
     constructor(IVotes staking_, TimelockController timelock_, MineCastNodeRegistryV4 registry_, address dao_,
         uint48 votingDelay_, uint32 votingPeriod_)
         Governor("MineCast Governor")

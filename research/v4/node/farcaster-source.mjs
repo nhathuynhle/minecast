@@ -117,3 +117,21 @@ export async function hasVerifiedWallet(fid, wallet) {
   }
   return false
 }
+
+/** FIDs that liked or recast the cast, with their reaction time (unix seconds). A FID can appear twice (like and recast). */
+export async function* reactorsOf(fid, hash) {
+  if (!/^0x[0-9a-f]{40}$/i.test(hash)) throw Error('Invalid cast hash')
+  for (const [reactionType, type] of [['Like', 'REACTION_TYPE_LIKE'], ['Recast', 'REACTION_TYPE_RECAST']]) {
+    const query = { target_fid: String(validFid(fid)), target_hash: hash, reaction_type: reactionType }
+    for await (const { data } of messages('reactionsByCast', query, 'MESSAGE_TYPE_REACTION_ADD')) {
+      const target = data.reactionBody?.targetCastId
+      if (data.reactionBody.type !== type || target?.fid !== fid || target.hash?.toLowerCase() !== hash.toLowerCase()
+        || !Number.isSafeInteger(data.timestamp)) throw Error('Wrong reaction target')
+      yield { fid: data.fid, at: FARCASTER_EPOCH + data.timestamp }
+    }
+  }
+}
+
+/** Duplicate key: the first 10 letters or digits, case-folded (spaces, punctuation and emoji ignored).
+ *  A later cast whose key is a prefix of an earlier cast's key that day repeats it. Keep in sync with api/_lib/mining-cast.ts. */
+export const textKey = text => Array.from(String(text ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')).slice(0, 10).join('')

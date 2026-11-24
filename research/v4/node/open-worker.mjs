@@ -9,16 +9,16 @@
 //      V4_RPC_URL, NODE_SIGNING_KEY (bonded key, also pays gas),
 //      NODE_JOURNAL_DIR (durable; never wipe or restore an old copy). No MineCast backend is needed.
 // Every node must run the same collect() rules, or honest nodes sign different digests.
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createWalletClient, encodeAbiParameters, getAddress, http, keccak256, parseAbi, publicActions, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base, baseSepolia } from 'viem/chains'
-import { FOLLOWER_TIERS } from '../allocation.mjs'
 import { miningPoolForDay } from './bootstrap-model.mjs'
-import { buildOpenReport, openDigest, typedReport } from '../open-report.mjs'
-import { FARCASTER_EPOCH, castById, followersOf, hasVerifiedWallet, lastFidRegisteredBy } from './farcaster-source.mjs'
+import { ENGAGEMENT_FLOORS, FOLLOWER_FLOORS, buildOpenReport, openDigest, typedReport } from '../open-report.mjs'
+import { FARCASTER_EPOCH, castById, followersOf, hasVerifiedWallet, lastFidRegisteredBy, reactorsOf, textKey } from './farcaster-source.mjs'
 import { keep } from './keeper.mjs'
 
 const DAY = 86400n, HOUR = 3600n, COMMIT_WINDOW = 1800n, REVIEW_PERIOD = HOUR
@@ -29,7 +29,7 @@ const FOLLOW_MIN_AGE = 7n * DAY, ACCOUNT_MIN_AGE = 30n * DAY
 const weekStart = t => t - ((t / DAY + 3n) % 7n) * DAY // 1970-01-01 was a Thursday
 const abi = parseAbi([
   'struct Report { uint256 day; bytes32 root; uint256 totalWeight; uint256 allocated; uint256 leafCount; bytes32 sourceHash; }',
-  'struct Entry { uint64 fid; address wallet; uint64 followers; bool nodeWork; bytes20 castHash; uint64 startedAt; address nodeKey; uint8 level; uint8 invites; }',
+  'struct Entry { uint64 fid; address wallet; uint64 followers; uint64 engagement; bool nodeWork; bytes20 castHash; uint64 startedAt; address nodeKey; uint8 level; uint8 invites; }',
   'struct Day { bytes32 digest; Report report; uint256 published; uint256 observedWeight; uint256 observedAllocation; uint256 claimed; uint64 claimEnd; bool contested; }',
   'function token() view returns (address)',
   'function registry() view returns (address)',
@@ -42,6 +42,7 @@ const abi = parseAbi([
   'function certificate(bytes32 digest) view returns (uint256 signedWeight, uint256 certifiedAt)',
   'function hasSigned(bytes32 digest, address signer) view returns (bool)',
   'function signedAt(bytes32 digest, address signer) view returns (uint256)',
+  'function nodeWorkKey(uint256 day, address wallet) view returns (address)',
   'function sessionCount(uint256 day) view returns (uint256)',
   'function sessionWallet(uint256 day, uint256 index) view returns (address)',
   'function sessions(uint256 day, address wallet) view returns (uint64 fid, bytes20 castHash, uint8 invites, uint64 startedAt, uint8 level)',
@@ -56,6 +57,9 @@ const abi = parseAbi([
   'function announcementAt(uint256 day, uint256 index) view returns (address signer, uint64 blockNumber)',
   'function announceReport(uint256 day, Report r, Entry[] entries)',
   'function commitReport(uint256 day, bytes32 commitment)',
+  'function revealCommitment(uint256 day, bytes32 digest, bytes32 salt)',
+  'function revealedDigest(uint256 day, address signer) view returns (bytes32)',
+  'function phase2Started(uint256 day) view returns (bool)',
   'function commitments(uint256 day, address signer) view returns (bytes32)',
   'function committerCount(uint256 day) view returns (uint256)',
   'function committerAt(uint256 day, uint256 index) view returns (address)',
@@ -66,8 +70,10 @@ const abi = parseAbi([
   'event ReportAnnounced(uint256 indexed day, address indexed signer, Entry[] entries)',
 ])
 const json = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v)
-// A key's commitment to its own report: bound to the key, so a peer cannot copy someone else's.
-export const commitmentOf = (digest, key) => keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'address' }], [digest, key]))
+// A key's commitment to its own report: bound to the key and hidden by a secret salt until phase 2,
+// so a peer can neither copy someone else's commitment nor guess the digest from public data.
+export const commitmentOf = (digest, key, salt) =>
+  keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'address' }, { type: 'bytes32' }], [digest, key, salt]))
 
 // Sessions live onchain (distributor.startMining), so any node rebuilds a day from plain RPC reads.
 async function sessionsOf(client, address, day) {
@@ -85,9 +91,19 @@ async function sessionsOf(client, address, day) {
 async function followerTier(fid, week, maxFollowerFid) {
   let count = 0
   for await (const follower of followersOf(fid, week - FOLLOW_MIN_AGE)) {
-    if (follower <= maxFollowerFid && ++count >= FOLLOWER_TIERS[0][0]) break
+    if (follower <= maxFollowerFid && ++count >= FOLLOWER_FLOORS[0]) break
   }
-  return FOLLOWER_TIERS.find(([floor]) => count >= floor)?.[0] ?? 0
+  return FOLLOWER_FLOORS.find(floor => count >= floor)
+}
+
+// Engagement: distinct accounts 30+ days old at the cohort close, other than the author, that liked or recast
+// the cast by the close. Counted once, after the close; posting late leaves less time to collect it.
+async function engagementTier(s, close, maxReactorFid) {
+  const reactors = new Set()
+  for await (const r of reactorsOf(Number(s.fid), s.castHash)) {
+    if (r.fid !== Number(s.fid) && r.fid <= maxReactorFid && BigInt(r.at) <= close && reactors.add(r.fid).size >= ENGAGEMENT_FLOORS[0]) break
+  }
+  return ENGAGEMENT_FLOORS.find(floor => reactors.size >= floor)
 }
 
 const sessionKey = s => `${getAddress(s.wallet)}:${s.castHash.toLowerCase()}`
@@ -100,20 +116,36 @@ async function holdsQuorum(read, key, day) {
   return weight > 0n && weight >= requiredWeight(total)
 }
 
-// The cast half of the rule: the cast is posted, then the session is opened onchain within 24 hours (5 minutes of clock skew).
-async function castProvable(s) {
-  if (s.fid > BigInt(Number.MAX_SAFE_INTEGER)) return false
+// The cast half of the rule: the cast is posted, then the session is opened onchain within 30 minutes (5 minutes of
+// clock skew). Returns the cast's duplicate key, or null when the cast does not prove the session.
+const CAST_MAX_AGE = 1800n
+async function castKey(s) {
+  if (s.fid > BigInt(Number.MAX_SAFE_INTEGER)) return null
   const cast = await castById(Number(s.fid), s.castHash)
   const castAt = cast && BigInt(FARCASTER_EPOCH + cast.data.timestamp)
-  return !!cast && castAt >= s.startedAt - DAY && castAt <= s.startedAt + 300n
+  return cast && castAt >= s.startedAt - CAST_MAX_AGE && castAt <= s.startedAt + 300n ? textKey(cast.data.castAddBody?.text) : null
 }
 
 // Session inputs are attacker-chosen: never let one throw, only Snapchain/RPC failures may abort the day.
 // `casts` holds sessions whose cast was already missing or out of range while the cohort was open; that never
 // changes, so spam is read once. A seen cast is read again: it may have been deleted, or the wallet unverified.
 async function provable(s, casts = {}) {
-  if (casts[sessionKey(s)] === false) return false
-  return await castProvable(s) && await hasVerifiedWallet(Number(s.fid), s.wallet)
+  if (casts[sessionKey(s)] === false) return null
+  const key = await castKey(s)
+  return key !== null && await hasVerifiedWallet(Number(s.fid), s.wallet) ? key : null
+}
+
+/** Proven sessions in start order (then FID, wallet); drops casts that repeat an earlier one that day (their key
+ *  is a prefix of an earlier key), then keeps each FID's earliest remaining session (one allocation per FID). */
+export function keepSessions(sessions, keys) {
+  const order = sessions.map((s, i) => [s, keys[i]]).filter(([, key]) => key !== null).sort(([a], [b]) =>
+    a.startedAt !== b.startedAt ? (a.startedAt < b.startedAt ? -1 : 1) : a.fid !== b.fid ? (a.fid < b.fid ? -1 : 1) : BigInt(a.wallet) < BigInt(b.wallet) ? -1 : 1)
+  const prefixes = new Set(), kept = new Map()
+  for (const [s, key] of order) {
+    if (!prefixes.has(key) && !kept.has(s.fid)) kept.set(s.fid, s)
+    for (let n = 0; n <= key.length; n++) prefixes.add(key.slice(0, n))
+  }
+  return [...kept.values()]
 }
 
 // Bounded parallel map that keeps input order; any failure rejects the batch once every worker has stopped.
@@ -136,6 +168,13 @@ function jsonCache(cacheDir, name) {
   return { cache, save }
 }
 
+async function fillEngagement(sessions, close, { cache, save }) {
+  try {
+    if (sessions.length && cache.maxReactorFid === undefined) cache.maxReactorFid = await lastFidRegisteredBy(Number(close - ACCOUNT_MIN_AGE))
+    await mapLimit(sessions, CONCURRENCY, async s => { cache[sessionKey(s)] ??= await engagementTier(s, close, cache.maxReactorFid) })
+  } finally { save() }
+}
+
 async function fillTiers(fids, week, { cache, save }) {
   try {
     if (fids.length && cache.maxFollowerFid === undefined) cache.maxFollowerFid = await lastFidRegisteredBy(Number(week - ACCOUNT_MIN_AGE))
@@ -146,22 +185,17 @@ async function fillTiers(fids, week, { cache, save }) {
 /** Keep a day's onchain session only if our Snapchain view proves it; any read error aborts the day. */
 export async function collect({ client, distributor, day, launchTime, cacheDir }) {
   const read = (functionName, args, address = distributor) => client.readContract({ address, abi, functionName, args })
-  const registry = await read('registry')
   const sessions = await sessionsOf(client, distributor, day)
   // Casts and wallets are judged after the cohort closes (a deleted cast or removed verification drops out).
   const casts = jsonCache(cacheDir, `casts-${day}`).cache
-  const proven = await mapLimit(sessions, CONCURRENCY, s => provable(s, casts))
-  const kept = new Map() // fid -> earliest provable session that day (one allocation per FID)
-  sessions.forEach((s, i) => {
-    if (!proven[i]) return
-    const other = kept.get(s.fid)
-    if (!other || s.startedAt < other.startedAt || (s.startedAt === other.startedAt && BigInt(s.wallet) < BigInt(other.wallet))) kept.set(s.fid, s)
-  })
+  const kept = keepSessions(sessions, await mapLimit(sessions, CONCURRENCY, s => provable(s, casts)))
   const week = weekStart(launchTime + day * DAY), tiers = jsonCache(cacheDir, `tiers-${week}`)
-  await fillTiers([...kept.keys()].map(Number), week, tiers)
-  const prev = await previousCertificate(read, day)
-  const entries = await mapLimit([...kept.values()], CONCURRENCY, async s =>
-    ({ ...s, followers: tiers.cache[Number(s.fid)], ...await nodeWork(read, registry, day, launchTime, s.wallet, prev) }))
+  await fillTiers(kept.map(s => Number(s.fid)), week, tiers)
+  // A cast nobody engaged with stays in the report at weight 0, so a like seen by one node only is a one-step difference.
+  const close = launchTime + (day + 1n) * DAY, reach = jsonCache(cacheDir, `engagement-${day}`)
+  await fillEngagement(kept, close, reach)
+  const entries = await mapLimit(kept, CONCURRENCY, async s =>
+    ({ ...s, followers: tiers.cache[Number(s.fid)], engagement: reach.cache[sessionKey(s)], ...await nodeWork(read, day, s.wallet) }))
   return { day, launchTime, entries, sourceHash: await read('sessionsHash', [day]) }
 }
 
@@ -172,7 +206,7 @@ export async function prewarm({ client, distributor, day, launchTime, cacheDir, 
   const casts = jsonCache(cacheDir, `casts-${day}`), fresh = sessions.filter(s => casts.cache[sessionKey(s)] === undefined)
   try {
     await mapLimit(fresh, CONCURRENCY, async s => {
-      const ok = await castProvable(s)
+      const ok = await castKey(s) !== null
       // A missing cast may still be propagating just after the session opens: judge it final after 10 minutes.
       if (ok || now >= s.startedAt + 600n) casts.cache[sessionKey(s)] = ok
     })
@@ -183,38 +217,21 @@ export async function prewarm({ client, distributor, day, launchTime, cacheDir, 
   return { casts: fresh.length, fids: new Set(fids).size }
 }
 
-async function previousCertificate(read, day) {
-  if (day === 0n) return null
-  const { digest } = await read('dayInfo', [day - 1n])
-  const [, certifiedAt] = await read('certificate', [digest])
-  return { digest, certifiedAt }
+// The distributor's own view applies the node-work rule (facts fixed at this day's cutoff), so every node agrees.
+async function nodeWork(read, day, wallet) {
+  const nodeKey = await read('nodeWorkKey', [day, wallet])
+  return { nodeWork: nodeKey !== zeroAddress, nodeKey }
 }
 
-// Same rule the distributor checks onchain: the payout wallet operates a key that signed the previous
-// day's certified report, and both happened before this day's report window opened (its cohort close).
-async function nodeWork(read, registry, day, launchTime, wallet, prev) {
-  const none = { nodeWork: false, nodeKey: zeroAddress }
-  const cutoff = launchTime + (day + 1n) * DAY
-  if (!prev || prev.digest === zeroHash || prev.certifiedAt === 0n || prev.certifiedAt > cutoff) return none
-  const keys = [...await read('keysOf', [wallet], registry)].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1)
-  for (const key of keys) {
-    const signed = await read('signedAt', [prev.digest, key])
-    // The bonus needs the key's own phase-1 commitment to equal the certified report (copying peers earns none).
-    if (signed !== 0n && signed <= cutoff && await read('commitments', [day - 1n, key]) === commitmentOf(prev.digest, key)) return { nodeWork: true, nodeKey: key }
-  }
-  return none
-}
-
-// Nodes read follows at different moments, so an unfollow in between can move a tier by one step. A node
-// co-signs the earliest announced entry list that matches its own on everything else and stays within one tier.
-const TIER_FLOORS = [...FOLLOWER_TIERS.map(([floor]) => floor), 0]
-const tierIndex = followers => TIER_FLOORS.indexOf(Number(followers))
+// Nodes read follows and reactions at different moments, so an unfollow or a late like can move a tier by one step.
+// A node co-signs an announced entry list that matches its own on everything else and stays within one step of each tier.
+const near = (floors, a, b) => { const i = floors.indexOf(Number(a)), j = floors.indexOf(Number(b)); return i >= 0 && j >= 0 && Math.abs(i - j) <= 1 }
 export function withinTolerance(mine, theirs) {
   if (mine.length !== theirs.length) return false
   const byWallet = new Map(theirs.map(e => [getAddress(e.wallet), e]))
   return byWallet.size === theirs.length && mine.every(m => {
     const t = byWallet.get(getAddress(m.wallet))
-    return !!t && tierIndex(t.followers) >= 0 && Math.abs(tierIndex(t.followers) - tierIndex(m.followers)) <= 1
+    return !!t && near(FOLLOWER_FLOORS, t.followers, m.followers) && near(ENGAGEMENT_FLOORS, t.engagement, m.engagement)
       && BigInt(t.fid) === BigInt(m.fid) && t.castHash.toLowerCase() === m.castHash.toLowerCase()
       && BigInt(t.startedAt) === BigInt(m.startedAt) && Number(t.level) === Number(m.level) && Number(t.invites) === Number(m.invites)
       && t.nodeWork === m.nodeWork && getAddress(t.nodeKey) === getAddress(m.nodeKey)
@@ -226,7 +243,7 @@ export function withinTolerance(mine, theirs) {
  *  tolerance the one with the most committed stake wins (ties: earliest). Our own committed report wins when
  *  more stake committed to it, so an early hostile or one-tier-off announcement cannot capture honest nodes. */
 export function pickAnnouncement(input, announcements, chainId, distributor, committed = [], ownDigest = null) {
-  const stake = digest => committed.reduce((sum, c) => c.commitment === commitmentOf(digest, c.key) ? sum + c.weight : sum, 0n)
+  const stake = digest => committed.reduce((sum, c) => c.revealed === digest ? sum + c.weight : sum, 0n)
   let best = null, bestStake = -1n
   for (const entries of announcements) {
     if (!withinTolerance(input.entries, entries)) continue
@@ -242,7 +259,7 @@ async function committedStakes(read, registry, day) {
   const list = []
   for (let i = 0n, count = await read('committerCount', [day]); i < count; i++) {
     const key = await read('committerAt', [day, i])
-    list.push({ key, commitment: await read('commitments', [day, key]), weight: await read('weightAt', [key, day], registry) })
+    list.push({ key, revealed: await read('revealedDigest', [day, key]), weight: await read('weightAt', [key, day], registry) })
   }
   return list
 }
@@ -310,23 +327,29 @@ export async function processDay({ client, account, distributor, dir, collect },
   const bonded = live && await read('weightAt', [account.address, day], await read('registry')) > 0n
   const file = path.join(dir, `${chainId}-${distributor.toLowerCase()}-${day}.json`), commitFile = file.replace(/\.json$/, '.commit.json')
   let mine = loadSigned(file, chainId, distributor)
-  if (!mine && bonded && now < reveal) {
-    // Phase 1: build our own report and commit to it before any peer report is visible.
+  // Phase 1: build our own report and commit to it (salted) before any peer report or digest is visible.
+  // Commits stay open past 30 minutes until someone reveals or signs, so a slow chain does not lose the day.
+  if (!mine && bonded && !(await read('phase2Started', [day]))) {
     if (!fs.existsSync(commitFile)) {
       const input = await collect(day, launchTime, distributor)
-      writeOnce(commitFile, { digest: (await checkedBuild(chainId, distributor, input, read)).digest, input })
+      writeOnce(commitFile, { digest: (await checkedBuild(chainId, distributor, input, read)).digest, salt: '0x' + randomBytes(32).toString('hex'), input })
     }
-    const { digest } = JSON.parse(fs.readFileSync(commitFile, 'utf8'))
-    if (await read('commitments', [day, account.address]) === zeroHash) await send('commitReport', [day, commitmentOf(digest, account.address)])
-    return 'committed; reveal and signing open when the 30-minute commit phase ends'
+    const { digest, salt } = JSON.parse(fs.readFileSync(commitFile, 'utf8'))
+    if (await read('commitments', [day, account.address]) === zeroHash) await send('commitReport', [day, commitmentOf(digest, account.address, salt)])
+    if (now < reveal) return 'committed; reveal and signing open when the 30-minute commit phase ends'
   }
   if (!mine && bonded) {
-    // Phase 2: co-sign the earliest announcement within tolerance, or reveal and sign our own commitment.
+    // Phase 2: reveal our commitment first (one pass), then co-sign the announcement with the most revealed
+    // committed stake within tolerance, or announce and sign our own.
     const committed = fs.existsSync(commitFile) ? JSON.parse(fs.readFileSync(commitFile, 'utf8')) : null
+    const ours = committed && await read('commitments', [day, account.address]) === commitmentOf(committed.digest, account.address, committed.salt)
+    if (ours && await read('revealedDigest', [day, account.address]) === zeroHash) {
+      await send('revealCommitment', [day, committed.digest, committed.salt])
+      return 'revealed our commitment; choosing a report on the next pass'
+    }
     const own = committed ? { ...committed.input, day: BigInt(committed.input.day), launchTime: BigInt(committed.input.launchTime) }
       : await collect(day, launchTime, distributor)
-    const canReveal = committed && !(await read('announced', [day, account.address]))
-      && await read('commitments', [day, account.address]) === commitmentOf(committed.digest, account.address)
+    const canReveal = ours && !(await read('announced', [day, account.address]))
     const adopted = pickAnnouncement(own, await announcementsOf(client, read, distributor, day), chainId, distributor,
       await committedStakes(read, await read('registry'), day), canReveal ? committed.digest : null)
     // A key that alone holds the quorum may certify without a commitment: it signs its own report late, unannounced.

@@ -4,7 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { zeroAddress, zeroHash } from 'viem'
-import { collect, commitmentOf, pickAnnouncement, prewarm, withinTolerance } from './open-worker.mjs'
+import { collect, keepSessions, pickAnnouncement, prewarm, withinTolerance } from './open-worker.mjs'
+import { textKey } from './farcaster-source.mjs'
 import { buildOpenReport, openDigest } from '../open-report.mjs'
 
 const network = 'FARCASTER_NETWORK_MAINNET', distributor = '0x' + 'd1'.repeat(20), token = '0x' + 'a0'.repeat(20)
@@ -13,18 +14,27 @@ const wallet = n => '0x' + String(n).padStart(2, '0').repeat(20)
 const cast = n => '0x' + String(n).padStart(2, '0').repeat(20)
 const session = (fid, w = fid, startedAt = at) => ({ fid: BigInt(fid), wallet: wallet(w), castHash: cast(fid), startedAt })
 // fid 1 valid node operator, 2 cast deleted, 3 wallet unverified, 4 valid (also mined yesterday: sessions are
-// whole UTC days, so they never overlap), 5 valid, 6 cast older than 24h, 7 absurd FID, 8 two wallets.
+// whole UTC days, so they never overlap), 5 valid, 6 cast older than 30 minutes, 7 absurd FID, 8 two wallets,
+// 9 repeats fid 5's text later ("123456789" after "1234567890"), 10 differs within 10 characters ("1234567891011").
 // Follower lists are [follower FID, follow age at session start].
 const days = { 0: [session(4, 4, day1 - 3600n)], 1: [1, 2, 3, 4, 5, 6].map(f => session(f)).concat(
-  [{ ...session(7), fid: 2n ** 63n }, session(8, 81, at + 10n), session(8, 80, at + 5n)]) }
+  [{ ...session(7), fid: 2n ** 63n }, session(8, 81, at + 10n), session(8, 80, at + 5n), session(9, 9, at + 20n), session(10, 10, at + 30n)]) }
+const texts = { 1: 'gm mates and happy weekend', 4: 'Building on MineCast', 5: '1234567890', 8: 'gm from 8', 9: '123456789', 10: '1234567891011' }
 // Day 1 is a Wednesday, so its tier week starts on Monday at day1 - 2 days; follows count up to 7 days before that.
 const D = 86400n, good = n => Array.from({ length: n }, (_, i) => [1000 + i, 10n * D])
 const followers = {
   1: [...good(9), [1100, 8n * D]], // 8 days old at the session but not 7 days before the week start: tier 0
   4: [],
-  5: [...good(10), [1101, -10n]], // tier 10; a follow made after the session never counts
+  5: [...good(100), [1101, -10n]], // tier 100; a follow made after the session never counts
   8: [...good(9), [2500, 10n * D]], // FID 2500 registered 10 days ago: the 30-day account rule drops it
+  9: [], 10: [],
 }
+const close = launch + 2n * D
+// Likes and recasts per cast: [reactor FID, reaction, time]. Fid 1: 9 counted; its own like, a 10-day-old account,
+// a like after the close and a second reaction from one account do not count. Fid 4: none (weight 0, still reported).
+const old = (n, from = 1000) => Array.from({ length: n }, (_, i) => [from + i, 'Like', at + 60n])
+const reactions = { 1: [...old(9), [1000, 'Recast', at + 90n], [1, 'Like', at], [2500, 'Like', at], [1500, 'Like', close + 1n]],
+  4: [], 5: old(4), 8: old(120), 10: old(1) }
 let ownCommit = true // whether the node key committed to yesterday's certified report on its own
 const prevDigest = '0x' + 'ee'.repeat(32), nodeKey = '0x' + 'bb'.repeat(20), cutoff = launch + 2n * 86400n // day 1's cohort close
 
@@ -41,7 +51,7 @@ const client = { async readContract({ functionName, args }) {
     case 'certificate': return [1n, cutoff - 100n]
     case 'keysOf': return args[0] === wallet(1) ? [nodeKey] : []
     case 'signedAt': return args[1] === nodeKey ? cutoff - 50n : 0n
-    case 'commitments': return args[1] === nodeKey && ownCommit ? commitmentOf(prevDigest, nodeKey) : zeroHash
+    case 'nodeWorkKey': return args[1] === wallet(1) && ownCommit ? nodeKey : zeroAddress // the rule itself is tested onchain
   }
   throw Error('unexpected read ' + functionName)
 } }
@@ -52,7 +62,14 @@ function snapchain(url) {
   if (url.pathname === '/v1/castById') {
     castReads++
     if (fid === 2) return Response.json({ errCode: 'not_found' }, { status: 400 })
-    return Response.json({ data: { fid, network, type: 'MESSAGE_TYPE_CAST_ADD', timestamp: ft(at - (fid === 6 ? 90000n : 60n)) } })
+    return Response.json({ data: { fid, network, type: 'MESSAGE_TYPE_CAST_ADD', timestamp: ft(at - (fid === 6 ? 1801n : 60n)),
+      castAddBody: { text: texts[fid] ?? `cast ${fid}` } } })
+  }
+  if (url.pathname === '/v1/reactionsByCast') {
+    if (!reactions[fid]) return new Response('unavailable', { status: 500 })
+    const kind = url.searchParams.get('reaction_type'), hash = url.searchParams.get('target_hash')
+    return Response.json({ messages: reactions[fid].filter(([, k]) => k === kind).map(([reactor, k, time]) => ({ data: { fid: reactor, network,
+      type: 'MESSAGE_TYPE_REACTION_ADD', timestamp: ft(time), reactionBody: { type: 'REACTION_TYPE_' + k.toUpperCase(), targetCastId: { fid, hash } } } })) })
   }
   if (url.pathname === '/v1/verificationsByFid') return Response.json({ messages: fid === 3 ? [] : [{ data: { fid, network,
     type: 'MESSAGE_TYPE_VERIFICATION_ADD_ETH_ADDRESS', verificationAddAddressBody: { address: url.searchParams.get('address'), protocol: 'PROTOCOL_ETHEREUM' } } }] })
@@ -67,8 +84,9 @@ function snapchain(url) {
 test('collect keeps only onchain sessions the operator Snapchain proves, with the onchain node-work rule', async t => {
   t.mock.method(globalThis, 'fetch', async url => snapchain(new URL(url)))
   const input = await collect({ client, distributor, day: 1n, launchTime: launch })
-  assert.deepEqual(input.entries.map(e => [Number(e.fid), e.wallet, e.followers, e.nodeWork, e.nodeKey, e.level, e.invites]), [
-    [1, wallet(1), 0, true, nodeKey, 0, 0], [4, wallet(4), 0, false, zeroAddress, 0, 0], [5, wallet(5), 10, false, zeroAddress, 3, 2], [8, wallet(80), 0, false, zeroAddress, 0, 0]])
+  assert.deepEqual(input.entries.map(e => [Number(e.fid), e.wallet, e.followers, e.engagement, e.nodeWork, e.nodeKey, e.level, e.invites]), [
+    [1, wallet(1), 0, 9, true, nodeKey, 0, 0], [4, wallet(4), 0, 0, false, zeroAddress, 0, 0], [5, wallet(5), 100, 4, false, zeroAddress, 3, 2],
+    [8, wallet(80), 0, 100, false, zeroAddress, 0, 0], [10, wallet(10), 0, 1, false, zeroAddress, 0, 0]])
   assert.equal(input.sourceHash, '0x' + '5'.repeat(64))
   ownCommit = false // signed yesterday's report but only copied it: no node bonus
   assert.equal((await collect({ client, distributor, day: 1n, launchTime: launch })).entries[0].nodeWork, false)
@@ -81,10 +99,12 @@ test('collect keeps only onchain sessions the operator Snapchain proves, with th
   assert.deepEqual(await prewarm(warm), { casts: 0, fids: 1 }) // casts were all judged; tiers read before the failure were kept
   assert.deepEqual(await prewarm(warm), { casts: 0, fids: 0 })
   castReads = 0
-  assert.deepEqual((await collect(args)).entries.map(e => e.followers), [0, 0, 10, 0])
-  assert.equal(castReads, 6) // the deleted, too-old and absurd-FID sessions are not read again after the close
+  assert.deepEqual((await collect(args)).entries.map(e => e.followers), [0, 0, 100, 0, 0])
+  assert.equal(castReads, 8) // the deleted, too-old and absurd-FID sessions are not read again after the close
   followers[5] = undefined // the weekly tier is cached, so fid 5 is not read again this week
-  assert.deepEqual((await collect(args)).entries.map(e => e.followers), [0, 0, 10, 0])
+  reactions[5] = undefined // engagement is counted once after the close and cached for the day
+  assert.deepEqual((await collect(args)).entries.map(e => [e.followers, e.engagement]), [[0, 9], [0, 0], [100, 4], [0, 100], [0, 1]])
+  reactions[5] = old(4)
   followers[3] = undefined
   // without the cache, a broken Snapchain read must abort the day, never silently drop a miner
   await assert.rejects(collect({ client, distributor, day: 1n, launchTime: launch }), /HTTP 500/)
@@ -92,7 +112,7 @@ test('collect keeps only onchain sessions the operator Snapchain proves, with th
 })
 
 test('a node co-signs the earliest announcement within one follower tier, never anything further off', () => {
-  const e = (n, followers, extra = {}) => ({ fid: BigInt(n), wallet: wallet(n), followers, nodeWork: false, castHash: cast(n),
+  const e = (n, followers, extra = {}) => ({ fid: BigInt(n), wallet: wallet(n), followers, engagement: 4, nodeWork: false, castHash: cast(n),
     startedAt: at, nodeKey: zeroAddress, level: 0, invites: 0, ...extra })
   const mine = [e(1, 500), e(2, 0)]
   assert.equal(withinTolerance(mine, [e(2, 0), e(1, 1000)]), true) // one tier up, any order
@@ -101,27 +121,45 @@ test('a node co-signs the earliest announcement within one follower tier, never 
   assert.equal(withinTolerance(mine, [e(1, 500)]), false) // a miner missing
   assert.equal(withinTolerance(mine, [e(1, 500, { level: 1 }), e(2, 0)]), false) // anything onchain must match exactly
   assert.equal(withinTolerance(mine, [e(1, 500, { invites: 1 }), e(2, 0)]), false)
+  assert.equal(withinTolerance(mine, [e(1, 500, { engagement: 9 }), e(2, 0, { engagement: 1 })]), true) // one engagement step each way
+  assert.equal(withinTolerance(mine, [e(1, 500, { engagement: 16 }), e(2, 0)]), false) // two steps
+  assert.equal(withinTolerance([e(1, 500, { engagement: 0 })], [e(1, 500, { engagement: 1 })]), true) // a like seen by one node only
+  assert.equal(withinTolerance(mine, [e(1, 500, { engagement: 5 }), e(2, 0)]), false) // not a tier floor
   const input = { day: 1n, launchTime: launch, entries: mine, sourceHash: '0x' + '5'.repeat(64) }
-  const picked = pickAnnouncement(input, [[e(1, 5000), e(2, 0)], [e(1, 1000), e(2, 10)], [e(1, 500), e(2, 0)]], 31337, distributor)
-  assert.deepEqual(picked.map(x => x.followers), [1000, 10])
-  assert.equal(withinTolerance([e(1, 10)], [e(1, 500)]), false) // the 100 floor sits between 10 and 500
+  const picked = pickAnnouncement(input, [[e(1, 5000), e(2, 0)], [e(1, 1000), e(2, 100)], [e(1, 500), e(2, 0)]], 31337, distributor)
+  assert.deepEqual(picked.map(x => x.followers), [1000, 100])
+  assert.equal(withinTolerance([e(1, 0)], [e(1, 500)]), false) // the 100 floor sits between 0 and 500
   assert.equal(pickAnnouncement(input, [[e(1, 5000), e(2, 0)]], 31337, distributor), null)
 })
 
 test('H-1: the announcement with the most committed stake wins, and our own report beats a weaker early one', () => {
-  const e = (n, followers) => ({ fid: BigInt(n), wallet: wallet(n), followers, nodeWork: false, castHash: cast(n),
+  const e = (n, followers) => ({ fid: BigInt(n), wallet: wallet(n), followers, engagement: 4, nodeWork: false, castHash: cast(n),
     startedAt: at, nodeKey: zeroAddress, level: 0, invites: 0 })
   const input = { day: 1n, launchTime: launch, entries: [e(1, 500), e(2, 0)], sourceHash: '0x' + '5'.repeat(64) }
   const digestOf = entries => openDigest(31337, distributor, buildOpenReport({ chainId: 31337, distributor, ...input, entries }).report)
-  const hostile = [e(1, 1000), e(2, 10)], honest = [e(1, 500), e(2, 0)], [k1, k2, k3] = [wallet(91), wallet(92), wallet(93)]
-  const committed = [{ key: k1, commitment: commitmentOf(digestOf(hostile), k1), weight: 10n },
-    { key: k2, commitment: commitmentOf(digestOf(honest), k2), weight: 30n }, { key: k3, commitment: commitmentOf(digestOf(honest), k3), weight: 30n }]
+  const hostile = [e(1, 1000), e(2, 100)], honest = [e(1, 500), e(2, 0)], [k1, k2, k3] = [wallet(91), wallet(92), wallet(93)]
+  // Revealed digests of salted commitments, as the worker reads them once phase 2 starts.
+  const committed = [{ key: k1, revealed: digestOf(hostile), weight: 10n },
+    { key: k2, revealed: digestOf(honest), weight: 30n }, { key: k3, revealed: digestOf(honest), weight: 30n }]
   // The hostile key announced first; the honest one (60 committed) later: co-sign the honest one.
   assert.deepEqual(pickAnnouncement(input, [hostile, honest], 31337, distributor, committed), honest)
   // Only the hostile one is announced yet, but our own committed report has more stake: reveal ours (null).
   assert.equal(pickAnnouncement(input, [hostile], 31337, distributor, committed, digestOf(honest)), null)
   // Our own report with less stake than an announcement within tolerance: co-sign the announcement.
   assert.deepEqual(pickAnnouncement(input, [hostile], 31337, distributor, committed.slice(0, 1), digestOf(honest)), hostile)
-  // A commitment of one key never counts for another key's report.
-  assert.deepEqual(pickAnnouncement(input, [hostile, honest], 31337, distributor, [{ ...committed[1], key: k1 }]), hostile)
+  // A commitment that is not revealed yet counts for nothing (its salt hides the digest).
+  assert.deepEqual(pickAnnouncement(input, [hostile, honest], 31337, distributor, [{ ...committed[1], revealed: zeroHash }]), hostile)
+})
+
+test('duplicate casts: a later cast whose first 10 letters or digits repeat an earlier cast that day does not count', () => {
+  const day = (...texts) => keepSessions(texts.map((_, i) => session(i + 1, i + 1, at + BigInt(i))), texts.map(textKey)).map(s => Number(s.fid))
+  assert.deepEqual(day('1234567890', '123456789'), [1]) // shorter copy of the earlier cast
+  assert.deepEqual(day('1234567890', '1234567891011'), [1, 2]) // differs inside the first 10
+  assert.deepEqual(day('1234567890', '12345 67890 and more'), [1]) // same first 10; spaces never count
+  assert.deepEqual(day('GM mates!', 'gm'), [1]) // case and punctuation never count
+  assert.deepEqual(day('gm mate', 'gm mates and happy weekend'), [1, 2]) // the later cast goes past the earlier one
+  assert.deepEqual(day('🔥', '🔥🔥'), [1]) // no letters or digits: the empty key repeats any earlier cast
+  // Order is by session start, then FID: the same text at the same second keeps the lower FID.
+  assert.deepEqual(keepSessions([session(2, 2), session(1, 1)], ['abc', 'abc']).map(s => Number(s.fid)), [1])
+  assert.deepEqual(keepSessions([session(1, 1)], [null]), []) // unproven sessions never block or count
 })

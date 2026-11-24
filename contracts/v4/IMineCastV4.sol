@@ -12,5 +12,5 @@ interface IMineCastTokenV4 is IERC20 {
 interface IMineCastStakingV4 {
     function token() external view returns (IERC20);
     function fundFutureRewards(uint256 amount) external;
-    function votingPowerAt(address account, uint256 blockNumber) external view returns (uint256);
+    function votingPowerAt(address account, uint256 timepoint) external view returns (uint256); // in the staking contract's clock
 }

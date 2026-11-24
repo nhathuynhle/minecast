@@ -4,17 +4,23 @@ pragma solidity ^0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {TokenCastOpenV4} from "./TokenCastOpenV4.sol";
 
-/// @notice No admin. Rewards use the stake balance immediately BEFORE each fixed epoch boundary.
-/// @dev This is snapshot-weighted staking, not a time-weighted APR product. Vote checkpoints use blocks.
+/// @notice No admin. Each epoch pays the stake held through all of it: the smaller of the balances just before
+///         its start and its end boundary.
+/// @dev This is snapshot-weighted staking, not a time-weighted APR product.
+///      Voting power needs no activation: stake counts once it has been held for 30 days, a top-up never removes
+///      power already earned, and every withdrawal or delegation away removes power at once. All vote reads use
+///      the timestamp clock (IERC6372 `mode=timestamp`), so Governor delays and periods are in seconds.
 contract MineCastOpenStakingV4 is ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Checkpoints for Checkpoints.Trace208;
     uint256 public constant EPOCH_LENGTH = 30 days;
     uint256 public constant MINIMUM_LOCK = 30 days;
     uint256 public constant CLAIM_WINDOW = 90 days;
+    uint256 public constant VOTE_MATURITY = 30 days;
 
     struct Epoch {
         uint48 snapshotTime;
@@ -35,12 +41,15 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     mapping(uint256 => uint256) public scheduledRewards;
     mapping(address => uint256) public stakedBalance;
     mapping(address => uint64) public lockedUntil;
-    mapping(address => uint256) public activeVotingBalance;
     mapping(address => Checkpoints.Trace208) private _stakes;
-    mapping(address => Checkpoints.Trace208) private _votes;
     Checkpoints.Trace208 private _totalStakes;
-    Checkpoints.Trace208 private _totalVotes;
-    uint256 public totalActiveVoting;
+    // Cumulative stake each delegate received and lost. Tokens leave a delegate only when unlocked, i.e. 30 days
+    // after they arrived, so power at t = received by (t - 30 days) - lost by t is exactly what it held 30 days.
+    mapping(address => Checkpoints.Trace208) private _received;
+    mapping(address => Checkpoints.Trace208) private _lost;
+    // Totals follow only stake and withdrawals; delegation moves power between delegates, never adds it.
+    Checkpoints.Trace208 private _totalReceived;
+    Checkpoints.Trace208 private _totalLost;
     mapping(uint256 => Epoch) public epochs;
     mapping(uint256 => mapping(address => bool)) public claimed;
     mapping(address => address) private _delegates;
@@ -50,7 +59,6 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     error Locked();
     event Staked(address indexed account, uint256 amount, uint64 lockedUntil);
     event Withdrawn(address indexed account, uint256 amount);
-    event GovernancePowerActivated(address indexed account, uint256 weight);
     event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
     event FutureRewardsFunded(address indexed funder, uint256 indexed epoch, uint256 amount);
     event EpochSnapshotted(uint256 indexed epoch, uint256 snapshotTime, uint256 totalStaked);
@@ -79,13 +87,16 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         emit FutureRewardsFunded(msg.sender, epoch, amount);
     }
 
-    /// @notice Every top-up resets this account's entire 30-day lock and future vote power.
+    /// @notice Every top-up locks the whole stake for 30 days again. The new tokens vote after 30 days; power
+    ///         already earned is kept.
     function stake(uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
         totalStaked += amount;
         stakedBalance[msg.sender] += amount;
         lockedUntil[msg.sender] = uint64(block.timestamp + MINIMUM_LOCK);
-        _checkpoint(msg.sender, 0);
+        _record(msg.sender);
+        _add(_received[delegates(msg.sender)], amount);
+        _add(_totalReceived, amount);
         token.safeTransferFrom(msg.sender, address(this), amount);
         emit Staked(msg.sender, amount, lockedUntil[msg.sender]);
     }
@@ -96,16 +107,11 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
         totalStaked -= amount;
         stakedBalance[msg.sender] -= amount;
-        _checkpoint(msg.sender, activeVotingBalance[msg.sender] != 0 ? stakedBalance[msg.sender] : 0);
+        _record(msg.sender);
+        _add(_lost[delegates(msg.sender)], amount);
+        _add(_totalLost, amount);
         token.safeTransfer(msg.sender, amount);
         emit Withdrawn(msg.sender, amount);
-    }
-
-    function activateGovernancePower() external {
-        if (stakedBalance[msg.sender] == 0) revert InvalidAmount();
-        if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
-        _checkpoint(msg.sender, stakedBalance[msg.sender]);
-        emit GovernancePowerActivated(msg.sender, stakedBalance[msg.sender]);
     }
 
     /// @notice Who votes with this account's mature stake (the account itself until it delegates).
@@ -114,18 +120,22 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         return delegatee == address(0) ? account : delegatee;
     }
 
-    /// @notice Lend your mature voting power to an active voter; delegate to yourself to take it back.
-    ///         Stake, rewards and withdrawals stay yours. Applies to the governor and monthly DAO votes alike.
+    /// @notice Lend your voting power to another voter; delegate to yourself to take it back. The old delegate
+    ///         loses it at once and the new one gains it after 30 days, so power cannot be rented for one vote.
+    ///         Moving a stake needs it unlocked and locks it again for 30 days: every removal from a delegate
+    ///         then takes tokens it has held for 30 days, so nobody can push fresh stake through a voter to cut
+    ///         that voter's power. Stake, rewards and withdrawals stay yours. Applies to Governor and DAO votes.
     function delegate(address delegatee) external {
         if (delegatee == address(0)) revert InvalidAmount();
         address from = delegates(msg.sender);
-        _delegates[msg.sender] = delegatee;
-        uint256 power = activeVotingBalance[msg.sender];
-        if (from != delegatee && power != 0) {
-            if (block.number > type(uint48).max) revert InvalidPhase();
-            _votes[from].push(uint48(block.number), _votes[from].latest() - uint208(power));
-            _votes[delegatee].push(uint48(block.number), _votes[delegatee].latest() + uint208(power));
+        uint256 balance = stakedBalance[msg.sender];
+        if (from != delegatee && balance != 0) {
+            if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
+            lockedUntil[msg.sender] = uint64(block.timestamp + MINIMUM_LOCK);
+            _add(_lost[from], balance);
+            _add(_received[delegatee], balance);
         }
+        _delegates[msg.sender] = delegatee;
         emit DelegateChanged(msg.sender, from, delegatee);
     }
 
@@ -145,6 +155,10 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         if (epoch != nextEpochToFinalize || block.timestamp < epochStart(epoch + 1)) revert InvalidPhase();
         Epoch storage e = epochs[epoch];
         if (!e.snapshotTaken) snapshotEpoch(epoch);
+        // Only stake held through the whole epoch earns it: min(start, end), so a stake timed across two
+        // boundaries earns one epoch, not two. Sum of each staker's min <= min of the totals.
+        uint208 atEnd = _totalStakes.upperLookup(uint48(e.snapshotTime + EPOCH_LENGTH));
+        if (atEnd < e.totalStaked) e.totalStaked = atEnd;
         e.finalized = true;
         nextEpochToFinalize = epoch + 1;
         uint256 amount = scheduledRewards[epoch] + rolloverRewards;
@@ -163,7 +177,9 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     function claim(uint256 epoch) external nonReentrant returns (uint256 amount) {
         Epoch storage e = epochs[epoch];
         if (!e.finalized || e.claimEnd == 0 || block.timestamp >= e.claimEnd || claimed[epoch][msg.sender]) revert InvalidPhase();
-        amount = e.rewardAmount * _stakes[msg.sender].upperLookup(e.snapshotTime) / e.totalStaked;
+        uint256 held = _stakes[msg.sender].upperLookup(e.snapshotTime);
+        uint256 atEnd = _stakes[msg.sender].upperLookup(uint48(e.snapshotTime + EPOCH_LENGTH));
+        amount = e.rewardAmount * (atEnd < held ? atEnd : held) / e.totalStaked;
         if (amount == 0) revert InvalidAmount();
         claimed[epoch][msg.sender] = true;
         e.claimedAmount += amount;
@@ -189,27 +205,39 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
         if (timestamp >= block.timestamp || timestamp > type(uint48).max) revert InvalidPhase();
         return _totalStakes.upperLookup(uint48(timestamp));
     }
-    function votingPowerAt(address account, uint256 blockNumber) public view returns (uint256) {
-        if (blockNumber >= block.number || blockNumber > type(uint48).max) revert InvalidPhase();
-        return _votes[account].upperLookup(uint48(blockNumber));
+    /// @notice Voting power of `account` (as a delegate) at a past timestamp.
+    function votingPowerAt(address account, uint256 timepoint) public view returns (uint256) {
+        if (timepoint >= block.timestamp || timepoint > type(uint48).max) revert InvalidPhase();
+        return _matured(_received[account], _lost[account], timepoint);
     }
-    /// @notice OpenZeppelin Governor reads mature voting power through these two IVotes views (block clock).
-    function getPastVotes(address account, uint256 blockNumber) external view returns (uint256) {
-        return votingPowerAt(account, blockNumber);
+    /// @notice OpenZeppelin Governor reads voting power through these IVotes / IERC6372 views (timestamp clock).
+    function getPastVotes(address account, uint256 timepoint) external view returns (uint256) {
+        return votingPowerAt(account, timepoint);
     }
-    function getPastTotalSupply(uint256 blockNumber) external view returns (uint256) {
-        if (blockNumber >= block.number || blockNumber > type(uint48).max) revert InvalidPhase();
-        return _totalVotes.upperLookup(uint48(blockNumber));
+    function getPastTotalSupply(uint256 timepoint) external view returns (uint256) {
+        if (timepoint >= block.timestamp || timepoint > type(uint48).max) revert InvalidPhase();
+        return _matured(_totalReceived, _totalLost, timepoint);
     }
-    function _checkpoint(address account, uint256 votingBalance) private {
-        uint256 previous = activeVotingBalance[account];
-        totalActiveVoting = totalActiveVoting - previous + votingBalance;
-        activeVotingBalance[account] = votingBalance;
-        if (block.number > type(uint48).max || block.timestamp > type(uint48).max || totalStaked > type(uint208).max) revert InvalidPhase();
-        _stakes[account].push(uint48(block.timestamp), uint208(stakedBalance[account]));
-        _totalStakes.push(uint48(block.timestamp), uint208(totalStaked));
-        address delegatee = delegates(account);
-        _votes[delegatee].push(uint48(block.number), _votes[delegatee].latest() - uint208(previous) + uint208(votingBalance));
-        _totalVotes.push(uint48(block.number), uint208(totalActiveVoting));
+    /// @notice Voting power right now, including this block's changes (for display; votes use past snapshots).
+    function getVotes(address account) external view returns (uint256) {
+        return _matured(_received[account], _lost[account], block.timestamp);
+    }
+    function clock() external view returns (uint48) { return SafeCast.toUint48(block.timestamp); }
+    // solhint-disable-next-line func-name-mixedcase
+    function CLOCK_MODE() external pure returns (string memory) { return "mode=timestamp"; }
+
+    function _matured(Checkpoints.Trace208 storage received, Checkpoints.Trace208 storage lost, uint256 t) private view returns (uint256) {
+        if (t < VOTE_MATURITY) return 0;
+        uint256 kept = received.upperLookup(uint48(t - VOTE_MATURITY));
+        uint256 gone = lost.upperLookup(uint48(t));
+        return kept > gone ? kept - gone : 0;
+    }
+    function _add(Checkpoints.Trace208 storage trace, uint256 amount) private {
+        trace.push(SafeCast.toUint48(block.timestamp), SafeCast.toUint208(trace.latest() + amount));
+    }
+    function _record(address account) private {
+        uint48 now_ = SafeCast.toUint48(block.timestamp);
+        _stakes[account].push(now_, SafeCast.toUint208(stakedBalance[account]));
+        _totalStakes.push(now_, SafeCast.toUint208(totalStaked));
     }
 }

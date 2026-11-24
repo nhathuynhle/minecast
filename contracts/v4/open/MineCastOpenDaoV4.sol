@@ -16,9 +16,11 @@ interface IMonthlyMiningV4 {
 }
 
 /// @notice Community treasury. Two fixed monthly actions (odd-month airdrop, even-month burn) plus
-///         spending of the unreserved balance by stake governance through its timelock. A simple-majority
-///         `spend` is capped at 5% of the unreserved treasury per 30-day period; `spendLarge` has no cap,
-///         and the Governor requires two thirds for any action other than `spend`.
+///         spending of the unreserved balance by stake governance through its timelock. Both spends draw on a
+///         credit in proportion to the unreserved treasury that refills linearly: a simple-majority `spend` up
+///         to 5% refilling over 30 days, a two-thirds `spendLarge` up to 20% refilling over 90 days, so even
+///         captured governance cannot empty the treasury at once. Every spend carries a deadline, so a queued
+///         spend cannot be executed long after the majority that passed it is gone.
 ///         Airdrops go only to miners who held at least a third of that month's mining staked when the
 ///         round opened; unclaimed and ineligible shares return to the treasury after the claim window.
 contract MineCastOpenDaoV4 is ReentrancyGuard {
@@ -30,12 +32,14 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
     uint256 public constant BURN_BPS = 500;
     uint256 public constant SPEND_PERIOD = 30 days;
     uint256 public constant SPEND_CAP_BPS = 500;
+    uint256 public constant LARGE_SPEND_BPS = 2000;
+    uint256 public constant LARGE_SPEND_REFILL = 90 days;
     TokenCastOpenV4 public immutable token;
     IMineCastStakingV4 public immutable staking;
     address public immutable governance;
 
     struct Round {
-        uint64 snapshotBlock;
+        uint64 snapshotTime;
         uint64 voteEnd;
         uint64 claimEnd;
         bool airdrop;
@@ -47,12 +51,17 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         uint256 remaining;
         uint256 yes;
         uint256 no;
+        uint64 eligibleAt; // airdrop stake is read here: the last second of the 16th, before any round can open
     }
     uint256 public reserved;
     mapping(uint256 month => Round) public rounds;
     mapping(uint256 month => mapping(address => bool)) public voted;
     mapping(uint256 month => mapping(address => bool)) public collected;
-    mapping(uint256 period => uint256) public spentInPeriod;
+    /// @notice Unused spend credit in basis points of the unreserved treasury, as of the matching timestamp.
+    uint256 public spendCredit = SPEND_CAP_BPS;
+    uint64 public spendAt;
+    uint256 public largeSpendCredit = LARGE_SPEND_BPS;
+    uint64 public largeSpendAt;
 
     error InvalidRound();
     error InvalidVote();
@@ -60,7 +69,8 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
     error Unauthorized();
     error NotEligible();
     error SpendCapExceeded();
-    event Opened(uint256 indexed month, uint256 miningMonth, bool airdrop, uint256 budget, uint256 snapshotBlock);
+    error Expired();
+    event Opened(uint256 indexed month, uint256 miningMonth, bool airdrop, uint256 budget, uint256 snapshotTime);
     event VoteCast(uint256 indexed month, address indexed voter, bool yes, uint256 weight);
     event Settled(uint256 indexed month, bool passed);
     event AirdropClaimed(uint256 indexed month, address indexed miner, uint256 amount);
@@ -72,6 +82,8 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         token = token_;
         staking = staking_;
         governance = governance_;
+        spendAt = uint64(block.timestamp);
+        largeSpendAt = uint64(block.timestamp);
     }
 
     /// @notice Permissionless monthly vote; odd months air to prior-month miners, even months burn.
@@ -80,7 +92,7 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         (uint256 year, uint256 number, uint256 date) = MineCastCalendar.yearMonthDay(block.timestamp);
         month = year * 100 + number;
         Round storage r = rounds[month];
-        if (date < 8 || date > 28 || r.voteEnd != 0) revert InvalidRound();
+        if (date < 17 || date > 28 || r.voteEnd != 0) revert InvalidRound(); // last month is final from the 17th
         uint256 previous = MineCastCalendar.previousMonthId();
         // A distributor serves whole UTC months, so any moment of last month names its ledger.
         uint256 lastMonth = block.timestamp - date * 1 days;
@@ -97,16 +109,17 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         if (r.budget == 0) revert InvalidRound();
         r.remaining = r.budget;
         reserved += r.budget;
-        r.snapshotBlock = uint64(block.number - 1);
+        r.snapshotTime = uint64(block.timestamp - 1);
+        r.eligibleAt = uint64(block.timestamp - block.timestamp % 1 days - (date - 17) * 1 days - 1);
         r.voteEnd = uint64(block.timestamp + VOTE_PERIOD);
-        emit Opened(month, previous, r.airdrop, r.budget, r.snapshotBlock);
+        emit Opened(month, previous, r.airdrop, r.budget, r.snapshotTime);
     }
 
     /// @notice One Yes/No vote weighted by mature stake at the immutable opening snapshot.
     function vote(uint256 month, bool yes) external {
         Round storage r = rounds[month];
         if (block.timestamp >= r.voteEnd || voted[month][msg.sender]) revert InvalidVote();
-        uint256 weight = staking.votingPowerAt(msg.sender, r.snapshotBlock);
+        uint256 weight = staking.votingPowerAt(msg.sender, r.snapshotTime); // timestamp clock
         if (weight == 0) revert InvalidVote();
         voted[month][msg.sender] = true;
         if (yes) r.yes += weight;
@@ -138,8 +151,8 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         uint256 share = IMonthlyMiningV4(r.mining).claimedByMonth(r.miningMonth, msg.sender);
         amount = r.budget * share / r.mined;
         if (amount == 0) revert NothingToClaim();
-        // Stake is read at the round's opening time, fixed before anyone knew the exact moment.
-        if (MineCastOpenStakingV4(address(staking)).stakeAtTime(msg.sender, r.voteEnd - VOTE_PERIOD) * 3 < share) revert NotEligible();
+        // Stake is read at a fixed calendar moment (end of the 16th), never at a moment someone picks.
+        if (MineCastOpenStakingV4(address(staking)).stakeAtTime(msg.sender, r.eligibleAt) * 3 < share) revert NotEligible();
         collected[month][msg.sender] = true;
         r.remaining -= amount;
         reserved -= amount;
@@ -159,22 +172,34 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
 
     /// @notice Stake governance funds work (grants, node incentives, liquidity) from the unreserved
     ///         treasury. Monthly airdrop/burn reservations can never be spent this way.
-    /// @notice Ordinary spending by simple majority, capped per 30-day period.
-    function spend(address to, uint256 amount) external nonReentrant {
+    /// @notice Ordinary spending by simple majority: up to 5% of the unreserved treasury, refilling over 30 days.
+    function spend(address to, uint256 amount, uint256 deadline) external nonReentrant {
         if (msg.sender != governance) revert Unauthorized();
-        uint256 period = block.timestamp / SPEND_PERIOD;
-        uint256 already = spentInPeriod[period];
-        // The period's starting unreserved balance is what is unreserved now plus what this period already spent.
-        uint256 unreserved = token.balanceOf(address(this)) - reserved;
-        if ((already + amount) * 10_000 > (unreserved + already) * SPEND_CAP_BPS) revert SpendCapExceeded();
-        spentInPeriod[period] = already + amount;
+        if (block.timestamp > deadline) revert Expired();
+        spendCredit = _draw(spendCredit, spendAt, SPEND_CAP_BPS, SPEND_PERIOD, amount);
+        spendAt = uint64(block.timestamp);
         _spend(to, amount);
     }
 
-    /// @notice Uncapped spending, e.g. moving the treasury; only reachable through a two-thirds Governor vote.
-    function spendLarge(address to, uint256 amount) external nonReentrant {
+    /// @notice Larger spending, only reachable through a two-thirds Governor vote: up to 20% of the unreserved
+    ///         treasury, refilling over 90 days.
+    function spendLarge(address to, uint256 amount, uint256 deadline) external nonReentrant {
         if (msg.sender != governance) revert Unauthorized();
+        if (block.timestamp > deadline) revert Expired();
+        largeSpendCredit = _draw(largeSpendCredit, largeSpendAt, LARGE_SPEND_BPS, LARGE_SPEND_REFILL, amount);
+        largeSpendAt = uint64(block.timestamp);
         _spend(to, amount);
+    }
+
+    /// @dev Credit is in basis points of the unreserved treasury and refills linearly up to `capBps`.
+    function _draw(uint256 credit, uint256 since, uint256 capBps, uint256 refill, uint256 amount) private view returns (uint256) {
+        uint256 unreserved = token.balanceOf(address(this)) - reserved;
+        if (amount == 0 || amount > unreserved) revert InvalidRound();
+        credit += (block.timestamp - since) * capBps / refill;
+        if (credit > capBps) credit = capBps;
+        uint256 cost = (amount * 10_000 + unreserved - 1) / unreserved; // rounded up
+        if (cost > credit) revert SpendCapExceeded();
+        return credit - cost;
     }
 
     function _spend(address to, uint256 amount) private {

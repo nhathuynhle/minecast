@@ -88,13 +88,15 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     const [, castHash, invites, startedAt, level] = await c.readContract({ ...mining, functionName: 'sessions', args: [day, miner] })
     const bundle = buildOpenReport({ chainId: 84532, distributor: mining.address, day, launchTime: launch,
       sourceHash: await c.readContract({ ...mining, functionName: 'sessionsHash', args: [day] }),
-      entries: [{ fid: 42n, wallet: miner, followers: 100000n, nodeWork: false, castHash, startedAt, level, invites }] }) // x100: 1% under the floor
+      entries: [{ fid: 42n, wallet: miner, followers: 100000n, engagement: 100n, nodeWork: false, castHash, startedAt, level, invites }] }) // x10 followers x10 engagement: 1% under the floor
     const close = launch + (day + 1n) * DAY
     if ((await c.getBlock()).timestamp < close) await at(close) // phase 1 at the 00:00 UTC close: the node commits
     await c.setBalance({ address: key.address, value: parseEther('1') })
+    const digest = openDigest(84532, mining.address, bundle.report), salt = keccak256(key.address)
     await c.waitForTransactionReceipt({ hash: await c.writeContract({ ...mining, functionName: 'commitReport', account: key,
-      args: [day, commitmentOf(openDigest(84532, mining.address, bundle.report), key.address)] }) })
-    await at(close + 1800n) // phase 2 after the 30-minute commit phase: sign
+      args: [day, commitmentOf(digest, key.address, salt)] }) })
+    await at(close + 1800n) // phase 2 after the 30-minute commit phase: reveal, then sign
+    await c.waitForTransactionReceipt({ hash: await c.writeContract({ ...mining, functionName: 'revealCommitment', account: key, args: [day, digest, salt] }) })
     await send(mining, 'submitSignatures', [bundle.report, [key.address], [await key.signTypedData(typedReport(84532, mining.address, bundle.report))]])
     await send(mining, 'publishAllocations', [day, bundle.entries, bundle.proofs])
     const n = await network(), d = await readApp.readV4Day(c, config, n, day, miner)
@@ -112,15 +114,15 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     await assert.rejects(readApp.verifyV4(c, { ...config, dao: other }), /links|returned no data/)
   })
   await t.test('wallet cancellation and account mismatch send no transaction', async () => {
-    selected = other; await action({ kind: 'activatePower' }, 'error')
-    selected = miner; rejectWallet = true; await action({ kind: 'activatePower' }, 'idle'); rejectWallet = false
+    selected = other; await action({ kind: 'revokeApproval' }, 'error')
+    selected = miner; rejectWallet = true; await action({ kind: 'revokeApproval' }, 'idle'); rejectWallet = false
     assert.equal(sent, 0)
   })
   const inviter = getAddress('0x' + 'a'.repeat(40))
   await startSession(0n, inviter)
   assert.equal((await network()).inviter, inviter) // an invite link is recorded with the session
   const first = await publish(0n)
-  assert.equal(await c.readContract({ ...mining, functionName: 'inviteCount', args: [inviter] }), 1n) // 2000 followers: counts
+  assert.equal(await c.readContract({ ...mining, functionName: 'inviteCount', args: [inviter] }), 1n) // 100+ followers and engagement: counts
   await t.test('claim receipt and balance agree; repeated claim never reports success', async () => {
     let n = await network(), d = await readApp.readV4Day(c, config, n, 0n, miner)
     assert.equal(miningPhase(d, n.timestamp), 'claimable'); assert.equal(d.amount, first.amounts[0])
@@ -136,12 +138,12 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     const r = await action({ kind: 'stake', amount })
     assert.equal(r.updates.filter(x => x.status === 'confirmed').length, 2)
     const n = await network(), s = await readApp.readV4Stake(c, config, n, 0n, miner)
-    assert.equal(s.balance, amount); assert.equal(n.totalStaked, amount); assert.equal(s.activePower, 0n)
+    assert.equal(s.balance, amount); assert.equal(n.totalStaked, amount); assert.equal(s.votingPower, 0n) // votes only once 30 days old
     assert.ok(s.lockedUntil > n.timestamp)
     assert.equal(await c.readContract({ ...token, functionName: 'allowance', args: [miner, staking.address] }), 0n)
-    await action({ kind: 'withdraw', amount }, 'error'); await action({ kind: 'activatePower' }, 'error')
+    await action({ kind: 'withdraw', amount }, 'error')
   })
-  await at(launch + 36n * DAY); await action({ kind: 'activatePower' })
+  await at(launch + 36n * DAY) // the stake is now over 30 days old and votes without activation
   // A February cohort to airdrop on in March; reported before the February ledger closes.
   // The next cohort's session opens at 00:00 UTC while day 40 still waits for its report; claiming comes later.
   await startSession(40n); await startSession(41n); await publish(40n)
@@ -196,7 +198,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     assert.equal(g.proposals.length, 0); assert.equal(g.nodeKey, key.address); assert.ok(g.treasury.capRemaining > 0n)
     await assert.rejects(readApp.readV4Governance(c, { ...config, dao: staking.address }, await network(), admin))
     const grant = parseEther('1000'), description = 'Fund a community dashboard\nPaid in one transfer, reported in the channel.'
-    const calldatas = [encodeFunctionData({ abi: appABI.daoAbi, functionName: 'spend', args: [other, grant] })]
+    const calldatas = [encodeFunctionData({ abi: appABI.daoAbi, functionName: 'spend', args: [other, grant, launch + 400n * DAY] })]
     selected = admin
     await action({ kind: 'propose', targets: [dao.address], values: [0n], calldatas, description }, 'error', admin) // 400k-stake rule, no node path
     await action({ kind: 'propose', targets: [dao.address], values: [0n], calldatas, description, nodeKey: key.address }, 'confirmed', admin)
@@ -205,14 +207,14 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     let [p] = g.proposals
     assert.equal(p.state, 'Pending'); assert.equal(p.description, description); assert.equal(p.supermajority, false)
     assert.deepEqual(p.actions, [{ kind: 'spend', to: other, amount: grant }])
-    await c.mine({ blocks: 11 })
+    await at((await c.getBlock()).timestamp + 11n) // test Governor: 10 s delay, 50 s voting (timestamp clock)
     p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
     assert.equal(p.state, 'Active'); assert.equal(p.power, amount)
     await action({ kind: 'castVote', proposalId: p.id, support: 1 })
     await action({ kind: 'castVote', proposalId: p.id, support: 0 }, 'error')
     p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
     assert.equal(p.voted, true); assert.equal(p.forVotes, amount)
-    await c.mine({ blocks: 51 })
+    await at((await c.getBlock()).timestamp + 51n)
     p = (await readApp.readV4Governance(c, config, await network(), miner)).proposals[0]
     assert.equal(p.state, 'Succeeded')
     const calls = { targets: p.targets, values: p.values, calldatas: p.calldatas, descriptionHash: p.descriptionHash }
@@ -224,8 +226,10 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     const before = await c.readContract({ ...token, functionName: 'balanceOf', args: [other] })
     await action({ kind: 'executeProposal', ...calls })
     assert.equal(await c.readContract({ ...token, functionName: 'balanceOf', args: [other] }), before + grant)
+    const capBefore = g.treasury.capRemaining
     g = await readApp.readV4Governance(c, config, await network(), miner)
-    assert.equal(g.proposals[0].state, 'Executed'); assert.equal(g.treasury.spent, grant)
+    assert.equal(g.proposals[0].state, 'Executed')
+    assert.ok(g.treasury.capRemaining < capBefore) // the spend used part of the refilling 5% credit
     await action({ kind: 'withdraw', amount })
     assert.equal((await network()).totalStaked, 0n)
   })

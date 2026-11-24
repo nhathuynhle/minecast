@@ -10,7 +10,7 @@ export type V4Action =
   | { kind: "startMining"; fid: bigint; castHash: Hex; claimDays?: bigint[]; inviter?: Address }
   | { kind: "claimMany"; days: bigint[] }
   | { kind: "stake" | "withdraw"; amount: bigint }
-  | { kind: "activatePower" | "revokeApproval" | "openVote" | "buyBoost" }
+  | { kind: "revokeApproval" | "openVote" | "buyBoost" }
   | { kind: "claimStake" | "finalizeEpoch" | "sweepEpoch"; epoch: bigint }
   | { kind: "vote"; month: bigint; yes: boolean }
   | { kind: "settleVote" | "claimAirdrop" | "releaseAirdrop"; month: bigint }
@@ -40,7 +40,6 @@ export function actionCall(config: V4Config, action: V4Action): { address: Addre
     case "stake": case "withdraw":
       if (action.amount <= 0n) throw Error("Enter an amount greater than zero.")
       return { ...staking, functionName: action.kind, args: [action.amount], label: action.kind === "stake" ? "Stake" : "Withdraw stake" }
-    case "activatePower": return { ...staking, functionName: "activateGovernancePower", args: [], label: "Activate voting power" }
     case "buyBoost": return { address: config.token, abi: tokenAbi, functionName: "buyBoostLevel", args: [], label: "Burn for the next boost level" }
     case "revokeApproval": return { address: config.token, abi: tokenAbi, functionName: "approve", args: [config.staking, 0n], label: "Remove staking approval" }
     case "claimStake": return { ...staking, functionName: "claim", args: [action.epoch], label: "Staking reward" }
@@ -71,6 +70,7 @@ export function friendlyV4Error(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   if (/insufficient funds/i.test(message)) return "Your wallet needs ETH on this network to pay the transaction fee."
   if (/InvalidPhase|InvalidRound|InvalidVote|NothingToClaim|AlreadyClaimed/i.test(message)) return "The onchain state changed or this action is not available yet. Refresh and try again."
+  if (/InvalidSession/.test(message)) return "This wallet already mined today, or the cast was used for an earlier day. Post a new cast for today."
   if (/Locked/i.test(message)) return "Your stake has not completed its 30-day lock."
   if (/GovernorInsufficientProposerVotes|GovernorRestrictedProposer/.test(message)) return "Proposing needs 1,000,000 TOKENCAST of active voting power, or an active node you operate."
   if (/ProposerHasLiveProposal/.test(message)) return "You already have a proposal that is pending or being voted on."

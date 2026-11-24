@@ -7,7 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @notice Permissionless validator escrow. Keys and amounts are immutable per position.
+/// @notice Permissionless validator escrow. Amounts are immutable per position; its operator may rotate the signing key.
 /// @dev An operator may create several positions, but splitting never increases voting weight.
 contract MineCastNodeRegistryV4 is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -20,6 +20,7 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     uint256 public constant INACTIVITY_DAYS = 14;
     /// @notice Certified days a key may miss (while others keep certifying) before anyone can remove it.
     uint256 public constant MISSED_CERTIFIED_DAYS = 14;
+    uint256 public constant STALLED_DAYS = 3;
     uint64 private constant NEVER = type(uint64).max;
 
     struct Node {
@@ -43,6 +44,12 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     /// @notice certifiedDays when the key last co-signed a certified report, or when it was activated.
     mapping(address signingKey => uint64) public certifiedMark;
     mapping(uint256 day => mapping(address signingKey => bool)) public certifiedSigner;
+    /// @notice The key that took over a rotated key's escrow (and its liabilities).
+    mapping(address signingKey => address) public successorOf;
+    /// @notice Stalled days in a row on which a key stayed off the majority report; `behindUntil` is the last
+    ///         such day + 1, so only the following day extends the run.
+    mapping(address signingKey => uint256) public behindRun;
+    mapping(address signingKey => uint256) public behindUntil;
 
     error InvalidNode();
     error InvalidPhase();
@@ -54,6 +61,7 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     event Slashed(address indexed signingKey, uint256 indexed offenseDay, uint256 amount);
     event Ejected(address indexed signingKey, uint256 indexed endDay, uint256 lastActiveDay);
     event EjectedByGovernance(address indexed signingKey, uint256 indexed endDay);
+    event KeyRotated(address indexed oldKey, address indexed newKey, uint256 indexed day);
 
     constructor(TokenCastOpenV4 token_) {
         if (address(token_).code.length == 0) revert InvalidNode();
@@ -92,6 +100,24 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
         _exit(signingKey, n);
     }
 
+    /// @notice Replace a lost or retired signing key without the join delay. From the next day the new key
+    ///         carries this escrow; an equivocation later proven against the old key still burns it.
+    function rotateKey(address oldKey, address newKey) external {
+        Node storage o = nodes[oldKey];
+        if (msg.sender != o.operator) revert Unauthorized();
+        if (!o.activated || o.endDay != NEVER || o.slashed) revert InvalidPhase();
+        if (newKey == address(0) || newKey.code.length != 0 || nodes[newKey].operator != address(0)) revert InvalidNode();
+        uint48 day = _nextDay();
+        o.endDay = day;
+        o.withdrawn = true; // the escrow moved; total weight is unchanged across the switch
+        nodes[newKey] = Node(msg.sender, uint64(block.timestamp), day, NEVER, o.weight, true, false, false);
+        _keysOf[msg.sender].push(newKey);
+        successorOf[oldKey] = newKey;
+        certifiedMark[newKey] = certifiedDays;
+        emit KeyRotated(oldKey, newKey, day);
+        emit Activated(newKey, day, o.weight);
+    }
+
     /// @notice The day's distributor records that this key signed some report for `day`.
     function recordSignature(address signingKey, uint256 day) external {
         if (msg.sender != token.distributorForDay(day) || msg.sender == address(0)) revert Unauthorized();
@@ -110,6 +136,21 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
         if (!n.activated || n.endDay != NEVER || n.slashed || !(silent || outvoted)) revert InvalidPhase();
         _exit(signingKey, n);
         emit Ejected(signingKey, n.endDay, last);
+    }
+
+    /// @notice The day's distributor reports that `signingKey` stayed off a stalled day's majority report.
+    ///         STALLED_DAYS such days in a row eject it (escrow returns normally): a bond can stall the network
+    ///         only while it is larger than the side it blocks.
+    function recordBehind(address signingKey, uint256 day) external {
+        if (msg.sender != token.distributorForDay(day) || msg.sender == address(0)) revert Unauthorized();
+        Node storage n = nodes[signingKey];
+        uint256 last = behindUntil[signingKey];
+        if (!n.activated || n.endDay != NEVER || n.slashed || day < last) revert InvalidPhase();
+        behindRun[signingKey] = day == last ? behindRun[signingKey] + 1 : 1;
+        behindUntil[signingKey] = day + 1;
+        if (behindRun[signingKey] < STALLED_DAYS) return;
+        _exit(signingKey, n);
+        emit Ejected(signingKey, n.endDay, day);
     }
 
     /// @notice Stake governance (the token's timelock) may remove a key it judges to be stalling the quorum,
@@ -161,9 +202,15 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
     /// @dev Slashing never rewrites a historical snapshot or creates a reporter mint reward.
     function slashEquivocation(address signingKey, uint256 offenseDay) external nonReentrant {
         if (msg.sender != token.distributorForDay(offenseDay) || msg.sender == address(0)) revert Unauthorized();
-        Node storage n = nodes[signingKey];
-        if (n.withdrawn || n.slashed || weightAt(signingKey, offenseDay) == 0
+        if (nodes[signingKey].slashed || weightAt(signingKey, offenseDay) == 0
             || block.timestamp >= uint256(token.launchTime()) + (offenseDay + 1) * 1 days + EXIT_DELAY) revert InvalidPhase();
+        address holder = signingKey; // a rotated key's escrow sits with its latest successor
+        while (successorOf[holder] != address(0)) holder = successorOf[holder];
+        Node storage n = nodes[holder];
+        if (n.withdrawn) revert InvalidPhase();
+        bool burned = n.slashed; // the escrow this key shares with its successor may have burned already
+        nodes[signingKey].slashed = true;
+        if (burned) return;
         n.slashed = true;
         uint48 day = _nextDay();
         if (n.endDay > day) {

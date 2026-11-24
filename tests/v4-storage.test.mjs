@@ -18,6 +18,8 @@ test('V4 session migration executes on PostgreSQL and enforces identity/session 
   await db.exec(estimatesSql); await db.exec(estimatesSql)
   const utcDaySql = fs.readFileSync('supabase/migrations/20261122_v4_utc_day_sessions.sql','utf8')
   await db.exec(utcDaySql); await db.exec(utcDaySql)
+  const textSql = fs.readFileSync('supabase/migrations/20261124_v4_duplicate_cast_text.sql','utf8')
+  await db.exec(textSql); await db.exec(textSql)
   async function start({ fid=42, wallet=hash(1), cast=hash(100), day=0, time='2030-01-01T00:00:00Z', chain=84532 }={}) {
     return (await db.query('select * from public.start_v4_mining_session($1::integer,$2::text,$3::bigint,$4::text,$5::text,$6::bigint,$7::timestamptz)',
       [chain,hash(2),fid,wallet,cast,day,time])).rows
@@ -74,5 +76,15 @@ test('V4 session migration executes on PostgreSQL and enforces identity/session 
     s=await read();assert.equal(s.cohort_miners,'3');assert.equal(s.estimated_miners,'2');assert.equal(s.total_weight,'16')
     const tiers=[[0,1],[9,1],[10,2],[499,2],[500,4],[999,4],[1000,6],[1999,6],[2000,10],[4999,10],[5000,18],[10000,30],[25000,50],[50000,75],[100000,100]]
     for(let i=0;i<tiers.length;i++) assert.equal((await create({fid:200+i,day:9,followers:tiers[i][0]})).estimated_weight,tiers[i][1])
+  })
+  await t.test('a cast whose first 10 letters or digits repeat an earlier cast that day is refused', async () => {
+    const open=(fid,key,day=20)=>db.query('select * from start_v4_mining_session_with_text($1::integer,$2::text,$3::bigint,$4::text,$5::text,$6::bigint,$7::timestamptz,$8::bigint,$9::text)',
+      [84532,hash(11),fid,hash(fid),hash(fid+5000),day,'2030-01-21T00:00:00Z',2000,key])
+    assert.equal((await open(300,'1234567890')).rows[0].text_key,'1234567890')
+    await assert.rejects(open(301,'123456789'),/repeats an earlier cast/) // a shorter copy
+    assert.equal((await open(302,'1234567891')).rows.length,1) // differs inside the first 10
+    assert.equal((await open(300,'1234567890')).rows.length,1) // retrying the same cast is not a repeat
+    assert.equal((await open(303,'123456789',21)).rows.length,1) // the next day starts fresh
+    await assert.rejects(open(304,'12345678901'),/text key/)
   })
 })

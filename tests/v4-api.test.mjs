@@ -26,9 +26,11 @@ beforeEach(() => {
     supabase:async(path,init={})=>{
       calls.push({path,init})
       if(path==='rpc/get_v4_mining_stats') return Response.json([{observed_at:new Date().toISOString(),active_miners:'4',cohort_miners:'10',estimated_miners:'10',total_weight:'60'}])
-      if(path==='rpc/start_v4_mining_session_with_estimate') {
-        const p=JSON.parse(init.body);inserted++
-        const row={id:'id1',fid:p.p_fid,wallet_address:p.p_wallet,cast_hash:p.p_cast_hash,day:p.p_day,
+      if(path==='rpc/start_v4_mining_session_with_text') {
+        const p=JSON.parse(init.body)
+        if(rows.some(r=>r.cast_hash!==p.p_cast_hash&&r.text_key.startsWith(p.p_text_key))) throw Error('Cast text repeats an earlier cast today') // the real helper throws the database message
+        inserted++
+        const row={id:'id1',fid:p.p_fid,wallet_address:p.p_wallet,cast_hash:p.p_cast_hash,day:p.p_day,text_key:p.p_text_key,
           started_at:p.p_started_at,ends_at:new Date((Math.floor(Date.parse(p.p_started_at)/86400000)+1)*86400000).toISOString()}
         rows.push(row);return Response.json([row])
       }
@@ -102,4 +104,14 @@ test('missing Neynar follower count is unknown rather than a fabricated x1',asyn
   assert.equal((await handler(req({followers:100000,nodeWork:true}))).status,201)
   const p=JSON.parse(calls[0].init.body)
   assert.equal(p.p_follower_count,null);assert.equal('nodeWork' in p,false)
+})
+test('a cast repeating the first 10 letters or digits of an earlier cast today is refused; mentions do not count',async()=>{
+  cast.text='@dwr.eth 12345 67890, and more!'
+  assert.equal((await handler(req())).status,201)
+  assert.equal(JSON.parse(calls.at(-1).init.body).p_text_key,'1234567890')
+  rows=rows.map(r=>({...r,fid:7,wallet_address:'0x'+'7'.repeat(40)})) // someone else posted it first
+  cast.hash='0x'+'4'.repeat(40);cast.text='123456789'
+  const r=await handler(req({castHash:cast.hash}));assert.equal(r.status,409);assert.match((await r.json()).error,/repeats one posted earlier/)
+  cast.hash='0x'+'5'.repeat(40);cast.text='1234567891011'
+  assert.equal((await handler(req({castHash:cast.hash}))).status,201)
 })

@@ -28,7 +28,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     uint256 public constant CLAIM_WINDOW = 7 days;
     uint256 public constant MAX_MINER_BPS = 100; // base per-wallet daily cap; boost level L raises it by 1 + 0.2L
     uint256 public constant MAX_BATCH = 100;
-    bytes32 public constant POLICY_HASH = keccak256("MineCast.OpenV4.Quorum.9:premine2100000:decay50bps:cap100bps:floor10000:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h");
+    bytes32 public constant POLICY_HASH = keccak256("MineCast.OpenV4.Quorum.10:premine2100000:decay50bps:cap100bps:floor10000:followers1-10x-engagement0-10-sqrt-reactors30d-at-close:node3x-prevday-own-commit-fixed-at-cutoff:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m-salted-open-until-reveal:review1h:cast30m-one-day:dupe-text-earliest");
     bytes32 public constant REPORT_TYPEHASH = keccak256("DailyReport(uint256 day,bytes32 root,uint256 totalWeight,uint256 allocated,uint256 leafCount,bytes32 sourceHash,bytes32 policyHash)");
 
     struct Report {
@@ -43,6 +43,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         uint64 fid;
         address wallet;
         uint64 followers;
+        uint64 engagement; // accounts 30+ days old that liked or recast the cast by the cohort close (tier floor)
         bool nodeWork;
         bytes20 castHash;
         uint64 startedAt;
@@ -58,7 +59,9 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         uint256 committedWeight; // signers whose own phase-1 commitment is exactly this report
         uint64 certifiedAt;
         bool soloSigned; // a signer alone holds the quorum (more than two thirds of the day's bond)
-        mapping(address => uint64) signedAt;
+        uint64 firstCertifiedAt; // never reset: the node-work bonus reads only facts fixed by the next cutoff
+        mapping(address => uint64) signedAt; // kept after evidence; droppedAt marks support removed
+        mapping(address => uint64) droppedAt;
     }
     struct Day {
         bytes32 digest;
@@ -79,6 +82,8 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     mapping(uint256 => Day) private _days;
     mapping(uint256 => mapping(uint64 => address)) public recipientForFid;
     mapping(bytes20 => bool) public usedCast;
+    /// @notice Cohort day + 1 that a cast backs (0: unused). A cast never backs sessions on two days.
+    mapping(bytes20 => uint256) public castDay;
     mapping(uint256 => bool) public monthFinalized;
     mapping(uint256 => uint256) public totalClaimedByMonth;
     mapping(uint256 => mapping(address => uint256)) public claimedByMonth;
@@ -96,6 +101,9 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     mapping(uint256 day => address[]) private _committers;
     mapping(uint256 day => mapping(address signer => bool)) public announced;
     mapping(uint256 day => mapping(address signer => bytes32)) public commitments;
+    /// @notice The digest a key revealed for its commitment (zero until revealed).
+    mapping(uint256 day => mapping(address signer => bytes32)) public revealedDigest;
+    mapping(uint256 day => bool) public phase2Started;
 
     error InvalidConfiguration();
     error InvalidReport();
@@ -110,7 +118,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     event SignatureRecorded(bytes32 indexed digest, uint256 indexed day, address indexed signer, uint256 weight);
     event Certified(uint256 indexed day, bytes32 indexed digest, bytes32 root, uint256 totalWeight, uint256 allocated, uint256 leafCount, bytes32 sourceHash);
     event ConflictingCertificates(uint256 indexed day, bytes32 first, bytes32 second);
-    event AllocationPublished(uint256 indexed day, uint256 indexed index, address indexed wallet, uint64 fid, uint64 followers, bool nodeWork, bytes20 castHash, uint64 startedAt, uint256 amount);
+    event AllocationPublished(uint256 indexed day, uint256 indexed index, address indexed wallet, uint64 fid, uint64 followers, uint64 engagement, bool nodeWork, bytes20 castHash, uint256 amount);
     event DayActivated(uint256 indexed day, uint256 claimEnd, uint256 allocated, uint256 stakingAmount, uint256 treasuryAmount);
     event Claimed(uint256 indexed day, uint64 indexed fid, address indexed wallet, uint256 amount);
     event EquivocationProven(uint256 indexed day, address indexed signer, bytes32 first, bytes32 second);
@@ -152,6 +160,11 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         uint256 day = (block.timestamp - launch) / 1 days;
         if (token.distributorForDay(day) != address(this)) revert InvalidPhase();
         if (sessions[day][msg.sender].startedAt != 0) revert InvalidSession();
+        // Reusing a cast on a later day would make publication of the earlier day revert that day's certified
+        // report at the `usedCast` check, losing its whole emission; refuse it here instead.
+        uint256 firstDay = castDay[castHash];
+        if (firstDay == 0) castDay[castHash] = day + 1;
+        else if (firstDay != day + 1) revert InvalidSession();
         // Burn level and invite count are fixed when the session opens; later changes never reach back.
         uint256 invites = inviteCount[msg.sender];
         sessions[day][msg.sender] = Session(fid, castHash, uint8(invites < 10 ? invites : 10), uint64(block.timestamp), token.boostLevel(msg.sender), 0, false);
@@ -185,21 +198,30 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     /// @notice Public state including complete expected report and remaining publication work.
     function dayInfo(uint256 day) external view returns (Day memory) { return _days[day]; }
     /// @notice The exact immutable boost formula (in fiftieths); social inputs themselves are quorum-attested.
-    function miningWeight(uint256 followers, bool nodeWork, uint256 invites, uint256 level) external pure returns (uint256) {
-        return MineCastRewardPolicyV4.weight(followers, nodeWork, invites, level);
+    function miningWeight(uint256 followers, uint256 engagement, bool nodeWork, uint256 invites, uint256 level) external pure returns (uint256) {
+        return MineCastRewardPolicyV4.weight(followers, engagement, nodeWork, invites, level);
     }
 
-    /// @notice Phase 1: a bonded key commits to keccak256(abi.encode(digest, key)) of the report it built
-    ///         itself, while no report of the day can be seen yet (signing and announcing wait for phase 2).
-    ///         Only a key whose own commitment equals the certified report earns the next day's node bonus,
-    ///         so a node that copies peers instead of reading Farcaster data gains nothing.
+    /// @notice Phase 1: a bonded key commits to keccak256(abi.encode(digest, key, salt)) of the report it built
+    ///         itself, with a secret salt so peers cannot guess the digest from public data. Commits stay open from
+    ///         the cohort close until phase 2 starts (the first reveal or signature, never before 30 minutes),
+    ///         so a congested chain at 00:00 UTC does not cost the day. Only a key whose own revealed commitment
+    ///         equals the certified report earns the next day's node bonus, so copying peers gains nothing.
     function commitReport(uint256 day, bytes32 commitment) external {
-        uint256 open = dayEnd(day);
-        if (block.timestamp < open || block.timestamp >= open + COMMIT_WINDOW) revert InvalidPhase();
+        if (block.timestamp < dayEnd(day) || phase2Started[day]) revert InvalidPhase();
         if (commitment == bytes32(0) || commitments[day][msg.sender] != bytes32(0) || registry.weightAt(msg.sender, day) == 0
             || registry.isSlashed(msg.sender)) revert InvalidSignature();
         commitments[day][msg.sender] = commitment;
         _committers[day].push(msg.sender);
+    }
+
+    /// @notice Phase 2 starts by revealing a commitment's digest and salt; peers then count committed stake per
+    ///         report. Reveal before signing: committed weight counts only for signatures made after the reveal.
+    function revealCommitment(uint256 day, bytes32 digest, bytes32 salt) external {
+        if (block.timestamp < dayEnd(day) + COMMIT_WINDOW) revert InvalidPhase();
+        if (digest == bytes32(0) || commitments[day][msg.sender] != keccak256(abi.encode(digest, msg.sender, salt))) revert InvalidSignature();
+        revealedDigest[day][msg.sender] = digest;
+        phase2Started[day] = true;
     }
 
     function committerCount(uint256 day) external view returns (uint256) { return _committers[day].length; }
@@ -238,6 +260,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         bytes32 digest = reportDigest(r);
         Certificate storage c = _certificates[digest];
         uint256 required = _requiredWeight(total);
+        phase2Started[r.day] = true; // a visible digest closes commits
         for (uint256 i; i < signers.length; ++i) {
             address signer = signers[i];
             if (c.signedAt[signer] != 0) revert DuplicateSigner();
@@ -260,7 +283,8 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     function proveCertifiedSignature(uint256 day, address signingKey) external {
         Day storage d = _days[day];
         Certificate storage c = _certificates[d.digest];
-        if (d.digest == bytes32(0) || d.contested || c.certifiedAt == 0 || c.signedAt[signingKey] == 0) revert InvalidSignature();
+        if (d.digest == bytes32(0) || d.contested || c.certifiedAt == 0 || c.signedAt[signingKey] == 0
+            || c.droppedAt[signingKey] != 0) revert InvalidSignature();
         registry.recordCertifiedSignature(signingKey, day);
     }
 
@@ -273,6 +297,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         // certify without a commitment, and a lone node that misses the commit phase does not lose the day.
         if (c.certifiedAt == 0 && c.signedWeight >= required && (c.committedWeight > total / 3 || c.soloSigned)) {
             c.certifiedAt = uint64(block.timestamp);
+            if (c.firstCertifiedAt == 0) c.firstCertifiedAt = c.certifiedAt;
             Day storage d = _days[r.day];
             // The same report certified again after evidence cost it the quorum just restarts its review period.
             if (d.digest == bytes32(0)) { d.digest = digest; d.report = r; registry.noteCertifiedDay(r.day); }
@@ -310,27 +335,28 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
             if (e.fid == 0 || s.fid != e.fid || s.castHash != e.castHash || s.startedAt != e.startedAt || s.level != e.level || s.invites != e.invites || usedCast[e.castHash]
                 || recipientForFid[day][e.fid] != address(0) || s.amount != 0
                 || (e.nodeWork ? !_didNodeWork(day, e.wallet, e.nodeKey) : e.nodeKey != address(0))) revert InvalidAllocation();
-            uint256 weight = MineCastRewardPolicyV4.weight(e.followers, e.nodeWork, e.invites, e.level);
+            uint256 weight = MineCastRewardPolicyV4.weight(e.followers, e.engagement, e.nodeWork, e.invites, e.level);
             uint256 amount = MineCastRewardPolicyV4.allocation(pool, weight, d.report.totalWeight, e.level);
             if (amount > type(uint176).max || !MerkleProof.verifyCalldata(proof, d.report.root, allocationLeaf(day, d.published, e, amount))) revert InvalidAllocation();
             recipientForFid[day][e.fid] = e.wallet;
             s.amount = uint176(amount);
             usedCast[e.castHash] = true;
             address inviter = inviterOf[e.wallet];
-            if (inviter != address(0) && e.followers >= 100 && !inviteCounted[e.fid]) {
+            if (inviter != address(0) && weight != 0 && e.followers >= 100 && !inviteCounted[e.fid]) {
                 inviteCounted[e.fid] = true;
                 ++inviteCount[inviter];
                 emit InviteCounted(inviter, e.fid, e.wallet);
             }
             d.observedWeight += weight;
             d.observedAllocation += amount;
-            emit AllocationPublished(day, d.published, e.wallet, e.fid, e.followers, e.nodeWork, e.castHash, e.startedAt, amount);
+            emit AllocationPublished(day, d.published, e.wallet, e.fid, e.followers, e.engagement, e.nodeWork, e.castHash, amount);
             ++d.published;
     }
 
     /// @notice Node-work bonus rule, checked entirely onchain: the payout wallet operates `key`, which
     ///         committed to exactly the previous day's certified report on its own and signed it, all before this
-    ///         day's report window (its cohort close).
+    ///         day's report window (its cohort close). Only facts already fixed at that cutoff count, so evidence
+    ///         or a lost quorum afterwards cannot invalidate a row of this day's certified report.
     function _didNodeWork(uint256 day, address wallet, address key) private view returns (bool) {
         if (day == 0) return false;
         (address operator,,,,,,,) = registry.nodes(key);
@@ -338,8 +364,28 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         Certificate storage c = _certificates[digest];
         uint256 cutoff = dayEnd(day);
         uint256 signed = c.signedAt[key];
-        return operator == wallet && c.certifiedAt != 0 && c.certifiedAt <= cutoff && signed != 0 && signed <= cutoff
-            && _committed(day - 1, key, digest);
+        uint256 dropped = c.droppedAt[key];
+        return operator == wallet && c.firstCertifiedAt != 0 && c.firstCertifiedAt <= cutoff && signed != 0
+            && signed <= cutoff && (dropped == 0 || dropped > cutoff) && _committed(day - 1, key, digest);
+    }
+
+    /// @notice The first of `wallet`'s keys that earns the node-work bonus on `day` (zero if none): workers
+    ///         read this so their reports apply exactly the onchain rule.
+    function nodeWorkKey(uint256 day, address wallet) external view returns (address) {
+        address[] memory keys = registry.keysOf(wallet);
+        for (uint256 i; i < keys.length; ++i) if (_didNodeWork(day, wallet, keys[i])) return keys[i];
+        return address(0);
+    }
+
+    /// @notice A day still without quorum a day after its close, whose leading report more than half of the
+    ///         day's bond signed: any bonded key off that report is behind. The registry ejects a key behind on
+    ///         three days in a row, so blocking the network takes more bond than the side being blocked.
+    function proveBehind(uint256 day, address signingKey, Report calldata leader) external {
+        Certificate storage c = _certificates[reportDigest(leader)];
+        if (leader.day != day || _days[day].digest != bytes32(0) || block.timestamp < dayEnd(day) + 1 days
+            || c.signedWeight * 2 <= registry.totalWeightAt(day) || registry.weightAt(signingKey, day) == 0
+            || (c.signedAt[signingKey] != 0 && c.droppedAt[signingKey] == 0)) revert InvalidEvidence();
+        registry.recordBehind(signingKey, day);
     }
 
     /// @notice Open exactly one claim window after quorum, full publication and public review.
@@ -418,10 +464,10 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     ///      self-equivocating key cannot cancel a day; only two conflicting certificates mark a day contested.
     function _dropSupport(uint256 day, address signer, bytes32 digest) private returns (bool) {
         Certificate storage c = _certificates[digest];
-        if (c.signedAt[signer] == 0) return false;
+        if (c.signedAt[signer] == 0 || c.droppedAt[signer] != 0) return false;
         uint256 weight = registry.weightAt(signer, day); uint256 total = registry.totalWeightAt(day);
         uint256 required = _requiredWeight(total);
-        c.signedAt[signer] = 0; // counted once, however much evidence arrives
+        c.droppedAt[signer] = uint64(block.timestamp); // counted once, however much evidence arrives
         c.signedWeight -= weight;
         if (_committed(day, signer, digest)) c.committedWeight -= weight;
         if (weight >= required) c.soloSigned = false;
@@ -451,11 +497,11 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         if (pool == 0 || r.allocated > pool || r.leafCount > type(uint32).max) revert InvalidReport();
         if (r.leafCount == 0) {
             if (r.root != 0 || r.totalWeight != 0 || r.allocated != 0) revert InvalidReport();
-        } else if (r.root == 0 || r.totalWeight < r.leafCount * 50 || r.totalWeight > r.leafCount * 10_000) revert InvalidReport();
+        } else if (r.root == 0 || r.totalWeight > r.leafCount * 10_000) revert InvalidReport();
     }
 
     function _committed(uint256 day, address key, bytes32 digest) private view returns (bool) {
-        return commitments[day][key] == keccak256(abi.encode(digest, key));
+        return digest != bytes32(0) && revealedDigest[day][key] == digest;
     }
 
     function _requiredWeight(uint256 total) private pure returns (uint256) {

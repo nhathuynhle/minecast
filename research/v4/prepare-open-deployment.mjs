@@ -6,8 +6,8 @@ import { encodeDeployData, encodeFunctionData, getAddress, getContractAddress, z
 import { packageOpen, DEPLOY_NAMES } from './package-open.mjs'
 
 export const GOVERNANCE_DELAY = 14n * 86400n
-// Block counts for Base's 2-second blocks: 1-day voting delay, 7-day voting period.
-export const VOTING_DELAY_BLOCKS = 43_200, VOTING_PERIOD_BLOCKS = 302_400
+// Seconds on the staking contract's timestamp clock: 1-day voting delay, 7-day voting period.
+export const VOTING_DELAY = 86_400, VOTING_PERIOD = 604_800
 
 export function prepareDeployment(config, contracts, currentTime = Math.floor(Date.now() / 1000)) {
   if (![31337, 84532, 8453].includes(config.chainId)) throw Error('Expected local Anvil, Base Sepolia or Base mainnet chain ID')
@@ -28,7 +28,7 @@ export function prepareDeployment(config, contracts, currentTime = Math.floor(Da
     MineCastOpenDaoV4: [token, staking, timelock],
     MineCastNodeRegistryV4: [token],
     MineCastOpenDistributorV4: [token, addresses.MineCastNodeRegistryV4, staking, addresses.MineCastOpenDaoV4],
-    MineCastGovernorV4: [staking, timelock, addresses.MineCastNodeRegistryV4, addresses.MineCastOpenDaoV4, VOTING_DELAY_BLOCKS, VOTING_PERIOD_BLOCKS],
+    MineCastGovernorV4: [staking, timelock, addresses.MineCastNodeRegistryV4, addresses.MineCastOpenDaoV4, VOTING_DELAY, VOTING_PERIOD],
   }
   const transactions = DEPLOY_NAMES.map((name, i) => ({ action: 'Deploy ' + name, chainId: config.chainId,
     from: deployer, nonce: config.pendingNonce + i, value: '0', expectedAddress: addresses[name], constructorArgs: args[name],
@@ -38,8 +38,8 @@ export function prepareDeployment(config, contracts, currentTime = Math.floor(Da
     chainId: config.chainId, from: deployer, nonce: config.pendingNonce + DEPLOY_NAMES.length, to: token, value: '0',
     data: encodeFunctionData({ abi: contracts.TokenCastOpenV4.abi, functionName: 'finalizeDistributor', args: [addresses.MineCastOpenDistributorV4, timelock] }) })
   return { status: 'UNSIGNED_PLAN_NOT_DEPLOYED', chainId: config.chainId, deployer, devWallet,
-    launchTime: config.launchTime, governanceDelay: GOVERNANCE_DELAY, votingDelay: VOTING_DELAY_BLOCKS,
-    votingPeriod: VOTING_PERIOD_BLOCKS, addresses, transactions,
+    launchTime: config.launchTime, governanceDelay: GOVERNANCE_DELAY, votingDelay: VOTING_DELAY,
+    votingPeriod: VOTING_PERIOD, addresses, transactions,
     constraints: ['Use one deployer and consecutive nonces; any unrelated transaction invalidates predicted addresses.',
       'Verify chain ID, pending nonce and block time against your RPC before signing.',
       'Estimate gas after each dependency deployment; do not blindly send this file.',

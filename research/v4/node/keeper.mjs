@@ -3,10 +3,12 @@
 // decide whether it is due, and a call that would revert is simply not sent. Gas comes from the node key.
 //   closing months, opening and settling the monthly DAO vote, releasing expired airdrops,
 //   finalizing and sweeping staking epochs, opening claims for days certified by other nodes,
-//   ejecting keys that went silent (found from registry Activated logs, scanned incrementally).
+//   ejecting keys that went silent (found from registry Activated logs, scanned incrementally),
+//   and proving keys "behind" on stalled days whose leading report this node signed (3 in a row eject them).
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseAbi } from 'viem'
+import { buildOpenReport } from '../open-report.mjs'
 
 const DAY = 86400n
 const abi = parseAbi([
@@ -23,6 +25,8 @@ const abi = parseAbi([
   'function finalizeEpoch(uint256 epoch)',
   'function sweepUnclaimed(uint256 epoch)',
   'function ejectInactive(address signingKey)',
+  'struct Report { uint256 day; bytes32 root; uint256 totalWeight; uint256 allocated; uint256 leafCount; bytes32 sourceHash; }',
+  'function proveBehind(uint256 day, address signingKey, Report leader)',
   'event Activated(address indexed signingKey, uint256 indexed startDay, uint256 weight)',
 ])
 
@@ -77,6 +81,15 @@ export async function keep({ client, account, distributor, dir }, launchTime, no
   await attempt(staking, 'finalizeEpoch', [await read(staking, 'nextEpochToFinalize')])
   const epoch = await read(staking, 'currentEpoch')
   for (const back of [5n, 4n]) if (epoch >= back) await attempt(staking, 'sweepUnclaimed', [epoch - back])
-  for (const key of await activatedKeys(client, registry, dir, launchTime, await client.getBlockNumber())) await attempt(registry, 'ejectInactive', [key])
+  const keys = await activatedKeys(client, registry, dir, launchTime, await client.getBlockNumber())
+  for (const key of keys) await attempt(registry, 'ejectInactive', [key])
+  // A day still without quorum a day after its close: if the report this node signed carries over half of the
+  // bond, every key off it is behind. Days go in order, since only consecutive days build an ejection.
+  for (let day = today > 8n ? today - 8n : 0n; day + 2n <= today; day++) {
+    const file = path.join(dir, `${client.chain.id}-${distributor.toLowerCase()}-${day}.json`)
+    if (!fs.existsSync(file)) continue
+    const { report } = buildOpenReport({ chainId: client.chain.id, distributor, ...JSON.parse(fs.readFileSync(file, 'utf8')).input })
+    for (const key of keys) await attempt(distributor, 'proveBehind', [day, key, report])
+  }
   return done
 }

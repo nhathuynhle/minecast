@@ -1,9 +1,8 @@
 // Open V4 quorum format. This computes allocations; it does NOT authenticate Farcaster data.
 import { encodeAbiParameters, hashTypedData, keccak256, concatHex, toHex, zeroHash, zeroAddress, getAddress } from 'viem'
-import { followerWeight } from './allocation.mjs'
 import { miningPoolForDay } from './node/bootstrap-model.mjs'
 
-export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.9:premine2100000:decay50bps:cap100bps:floor10000:tiers1-2-4-6-10-18-30-50-75-100:node5x-prevday-own-commit:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m:review1h'))
+export const POLICY_HASH = keccak256(toHex('MineCast.OpenV4.Quorum.10:premine2100000:decay50bps:cap100bps:floor10000:followers1-10x-engagement0-10-sqrt-reactors30d-at-close:node3x-prevday-own-commit-fixed-at-cutoff:invite+0.1-max10-in-cap100-fid-once-f100:surplus5-95:onchain-sessions:claim7d:boost-burn-L1-9-x0.2-1M-each-cap*(1+0.2L)-ceil200:followers-weekly-mon-link7d-account30d:utc-day-sessions:commit30m-salted-open-until-reveal:review1h:cast30m-one-day:dupe-text-earliest'))
 export const types = { DailyReport: [
   { name: 'day', type: 'uint256' }, { name: 'root', type: 'bytes32' },
   { name: 'totalWeight', type: 'uint256' }, { name: 'allocated', type: 'uint256' },
@@ -16,14 +15,20 @@ export function typedReport(chainId, distributor, report) {
 export function openDigest(chainId, distributor, report) { return hashTypedData(typedReport(chainId, distributor, report)) }
 // While total weight is below 10,000 base units, one unit earns at most pool / 10,000; the rest is surplus.
 export const MIN_TOTAL_WEIGHT = 500_000n
-// Weights are in fiftieths: min(min(tier × node 5 × (1 + 0.1 × invites), 100) × (1 + 0.2 × level), 200) × 50.
+// Tier floors, highest first; a report carries the floor, never the raw count.
+export const FOLLOWER_FLOORS = [100_000, 50_000, 25_000, 10_000, 5_000, 2_000, 1_000, 500, 100, 0]
+// floor(sqrt(n)) steps up to 10: accounts 30+ days old, not the author, that liked or recast by the cohort close.
+export const ENGAGEMENT_FLOORS = [100, 81, 64, 49, 36, 25, 16, 9, 4, 1, 0]
+const factor = (floors, n) => { const i = floors.findIndex(f => n >= f); return BigInt(floors.length - 1 - i) }
+// Weights are in fiftieths: min(min(followers 1..10 × engagement 0..10 × node 3 × (1 + 0.1 × invites), 100) × (1 + 0.2 × level), 200) × 50.
 export function weightOf(entry) {
-  const base = followerWeight(Number(entry.followers)) * (entry.nodeWork ? 5n : 1n) * (10n + BigInt(Math.min(entry.invites ?? 0, 10)))
+  const base = (factor(FOLLOWER_FLOORS, Number(entry.followers)) + 1n) * factor(ENGAGEMENT_FLOORS, Number(entry.engagement))
+    * (entry.nodeWork ? 3n : 1n) * (10n + BigInt(Math.min(entry.invites ?? 0, 10)))
   const boosted = (base > 1000n ? 1000n : base) * (5n + BigInt(entry.level ?? 0))
   return boosted > 10000n ? 10000n : boosted
 }
 const components = [ { name: 'fid', type: 'uint64' }, { name: 'wallet', type: 'address' },
-  { name: 'followers', type: 'uint64' }, { name: 'nodeWork', type: 'bool' },
+  { name: 'followers', type: 'uint64' }, { name: 'engagement', type: 'uint64' }, { name: 'nodeWork', type: 'bool' },
   { name: 'castHash', type: 'bytes20' }, { name: 'startedAt', type: 'uint64' }, { name: 'nodeKey', type: 'address' },
   { name: 'level', type: 'uint8' }, { name: 'invites', type: 'uint8' } ]
 export function openLeaf(chainId, distributor, day, index, entry, amount) {
@@ -51,10 +56,12 @@ export function buildOpenReport({ chainId, distributor, day, launchTime, entries
   const fids = new Set(), wallets = new Set(), casts = new Set()
   const canonical = entries.map(entry => {
     const e = { ...entry, wallet: getAddress(entry.wallet), fid: integer(entry.fid), followers: integer(entry.followers),
+      engagement: integer(entry.engagement),
       startedAt: integer(entry.startedAt), nodeKey: getAddress(entry.nodeKey ?? zeroAddress), level: Number(entry.level ?? 0),
       invites: Number(entry.invites ?? 0) }
     const start = launchTime + day * 86400n
     if (e.fid <= 0n || e.fid >= 2n ** 64n || e.followers < 0n || e.followers > BigInt(Number.MAX_SAFE_INTEGER)
+      || e.engagement > BigInt(Number.MAX_SAFE_INTEGER)
       || typeof e.nodeWork !== 'boolean' || e.startedAt >= 2n ** 64n || e.startedAt < start || e.startedAt >= start + 86400n
       || /^0x0{40}$/i.test(e.wallet) || !/^0x[0-9a-f]{40}$/i.test(e.castHash) || /^0x0{40}$/i.test(e.castHash)
       || e.nodeWork !== (e.nodeKey !== zeroAddress) || !Number.isInteger(e.level) || e.level < 0 || e.level > 9

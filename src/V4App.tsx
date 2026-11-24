@@ -5,11 +5,10 @@ import { Layers, Radio, Wallet, Vote, RefreshCw, ExternalLink, Check, Loader2, A
 import { bootFarcaster, composeOnFarcaster, connectFarcasterWallet, ethereumProviderForChain, farcasterFetch, type FarcasterIdentity, type EthereumProvider } from "./lib/farcaster"
 import { createV4Client } from "./lib/v4/client"
 import { deploymentKey, parseV4Config, type V4Config } from "./lib/v4/config"
-import { readV4Network, readV4Day, readV4Stake, readV4Dao, readV4Governance, claimableDays, blockTime, BLOCK_SECONDS, type V4Network, type V4Stake, type V4Dao, type V4Governance, type V4Proposal } from "./lib/v4/read"
+import { readV4Network, readV4Day, readV4Stake, readV4Dao, readV4Governance, claimableDays, type V4Network, type V4Stake, type V4Dao, type V4Governance, type V4Proposal } from "./lib/v4/read"
 import { daoAbi } from "./lib/v4/abi"
 import { executeV4Action, confirmV4Transaction, friendlyV4Error, isRejection, type PendingV4Tx, type TxProgress, type V4Action } from "./lib/v4/transactions"
 import { countdown, miningPhase, phaseDeadline, monthAt, monthStart, previousMonth, tokens, validMonth, DAY, type V4Session, type MiningDay, type MiningPhase } from "./lib/v4/state"
-import { estimateV4Reward } from "./lib/v4/estimates"
 import { useLiveStats } from "./lib/v4/use-live-stats"
 import { V4Guide, type GuideSection } from "./V4Guide"
 import "./v4.css"
@@ -78,7 +77,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
     return load<Address>(`${scope}:ref`)
   })
   const [inviteNote, setInviteNote] = useState("")
-  const [castText, setCastText] = useState("Mining with the Farcaster community on MineCast. Join today's session!")
+  const [castText, setCastText] = useState("") // each cast must be the miner's own words: copies of an earlier cast today do not count
   const [error, setError] = useState("")
   const [sessionError, setSessionError] = useState("")
   const [busy, setBusy] = useState(false)
@@ -163,8 +162,6 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const phase = dayData ? miningPhase(dayData, timestamp, session) : null
   const live = useLiveStats(config, tab === "mine" ? dayData?.day : undefined)
   const statsFresh = live.receivedAt > 0 && clock - live.receivedAt < 45000 && !live.unavailable
-  const estimate = statsFresh && live.data && dayData && !dayData.certifiedAt && !dayData.contested && ["mining", "waiting"].includes(phase ?? "")
-    ? estimateV4Reward(dayData.pool, live.data, session?.estimated_weight, network?.boostLevel ?? 0, network?.invites ?? 0) : null
   const deadline = dayData && phase ? phaseDeadline(dayData, phase, session) : 0n
   const fresh = updated > 0 && clock - updated < 45000 && !error
   const locked = busy || Boolean(pending) || !fresh || !account
@@ -190,8 +187,10 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const canPropose = !!gov && (gov.votes >= gov.threshold || !!gov.nodeKey)
   const proposalValid = !!gov && isAddress(proposalTo.trim()) && proposalWei !== null && proposalWei > 0n && proposalWei <= gov.treasury.unreserved && proposalText.trim().length >= 10
   async function submitProposal() {
-    if (!gov || !proposalValid || proposalWei === null) return
-    const data = encodeFunctionData({ abi: daoAbi, functionName: proposalLarge ? "spendLarge" : "spend", args: [getAddress(proposalTo.trim()), proposalWei] })
+    if (!gov || !network || !proposalValid || proposalWei === null) return
+    // The spend must run within two weeks of the earliest moment it can (vote, then timelock), or it expires.
+    const deadline = network.timestamp + gov.votingDelay + gov.votingPeriod + gov.timelockDelay + 14n * 86_400n
+    const data = encodeFunctionData({ abi: daoAbi, functionName: proposalLarge ? "spendLarge" : "spend", args: [getAddress(proposalTo.trim()), proposalWei, deadline] })
     const ok = await transact({ kind: "propose", targets: [config.dao], values: [0n], calldatas: [data], description: proposalText.trim(),
       nodeKey: gov.votes < gov.threshold ? gov.nodeKey : undefined })
     if (ok) { setProposalTo(""); setProposalAmount(""); setProposalText("") }
@@ -236,11 +235,12 @@ function ConnectedV4({ config }: { config: V4Config }) {
       }
       setCastLink(identifier); save(castKey, identifier)
       let castHash = /^0x[0-9a-f]{40}$/i.test(identifier) ? identifier.toLowerCase() : "", day = ""
-      try { // Resolves cast links and feeds live estimates; with a cast hash the session can start without it.
+      try { // Resolves cast links and refuses copied casts; with a cast hash the session can start without it.
         const response = await farcasterFetch("/api/v4/mining", { method: "POST", signal: AbortSignal.timeout(25000), headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chainId: config.chainId, distributor: config.distributor, walletAddress: account,
             ...(castHash ? { castHash } : { castUrl: identifier }) }) })
         const body = await response.json()
+        if (response.status === 409) { save(castKey, null); setCastLink("") } // this cast can never open a session: let the miner post a new one
         if (response.status >= 400 && response.status < 500) { castHash = ""; throw Error(body.error || "Could not verify this cast.") }
         if (!response.ok) throw Error(body.error || "Cast verification is temporarily unavailable.")
         if (body.chainId !== config.chainId || body.distributor?.toLowerCase() !== config.distributor.toLowerCase() || body.session?.fid !== identity.fid) throw Error("Unexpected session response. Refresh to reconcile your session.")
@@ -282,21 +282,20 @@ function ConnectedV4({ config }: { config: V4Config }) {
           {phase === "activate" && dayData && <><Button disabled={locked} onClick={() => void transact({ kind: "activateDay", day: dayData.day })}>Open claim window</Button></>}
           {phase === "publishing" && dayData && <p className="v4-muted">{String(dayData.published)} / {String(dayData.leafCount)} allocations published.</p>}
           {dayData && !dayData.certifiedAt && session && ["mining", "waiting"].includes(phase ?? "") && <div className="v4-estimate" aria-live="polite">
-            <span className="v4-muted">Estimated session reward</span><strong>{network.totalBond < 10n ** 24n ? "Trial day, no reward" : estimate === null ? "—" : `≈ ${tokens(estimate)} TOKENCAST`}</strong>
+            <span className="v4-muted">{network.totalBond < 10n ** 24n ? "Trial day, no reward" : "Likes and recasts from accounts 30+ days old count until 00:00 UTC"}</span>
           </div>}
           <dl className="v4-stats"><Stat label={`Pool · day ${String(dayData?.day ?? network.day)}`}>{tokens(dayData?.pool ?? network.pool, 0)}</Stat><Stat label="Your daily cap">{tokens((dayData?.pool ?? network.pool) * BigInt(5 + network.boostLevel) / 500n, 0)}</Stat></dl>
           <div className="v4-live" data-testid="live-mining-stats"><dl className="v4-stats"><Stat label="Active miners">{live.data ? live.data.activeMiners.toLocaleString("en-US") : "—"}</Stat><Stat label="Miners in this cohort">{live.data ? live.data.cohortMiners.toLocaleString("en-US") : "—"}</Stat></dl>
             <p className="v4-muted">{live.data ? `${statsFresh ? "Updated" : "Last known"} ${new Date(live.data.observedAt).toLocaleTimeString()}` : live.unavailable ? "Live counts unavailable" : "Loading live counts…"}</p>
-            {live.data && live.data.estimatedMiners < live.data.cohortMiners && <p className="v4-muted">Estimate paused until all follower counts are in.</p>}
           </div>
           <details><summary>My mining days</summary><label>Day number<input aria-label="Mining day" inputMode="numeric" value={dayInput} placeholder={String(dayData?.day ?? network.day)} onChange={e => setDayInput(e.target.value)} /></label>
             <div className="v4-chips">{sessions.slice(0, 12).map(s => <button key={s.id} type="button" onClick={() => setDayInput(String(s.day))}>Day {s.day}</button>)}</div></details>
         </Card>
         <Card title="Cast to mine" help={() => setGuide("claims")}>{sessionMessage && sessionMessage !== "Ready to cast." && <p className="v4-muted">{sessionMessage}</p>}
           {sessionError && <p role="alert" className="v4-error">{sessionError}</p>}
-          <label className="sr-only" htmlFor="v4-cast">Suggested cast</label><textarea id="v4-cast" value={castText} maxLength={1024} onChange={e => setCastText(e.target.value)} rows={3} />
+          <label className="sr-only" htmlFor="v4-cast">Suggested cast</label><textarea id="v4-cast" value={castText} maxLength={1024} onChange={e => setCastText(e.target.value)} rows={3} placeholder="Write today's cast in your own words" />
           {network.moved && <p className="v4-muted">Stake governance moved mining to a new contract ({network.currentDistributor}). This app version still settles earlier days; update the app to keep mining.</p>}
-          <Button disabled={locked || !identity || !eligible || !!castLink || network.moved} onClick={() => void postCast(false)}><Send size={17} />Post cast & start today's session</Button>
+          <Button disabled={locked || !identity || !eligible || !!castLink || network.moved || !/[\p{L}\p{N}]/u.test(castText)} onClick={() => void postCast(false)}><Send size={17} />Post cast & start today's session</Button>
           <details open={!!castLink}><summary>Already posted? Verify your cast</summary><label>Cast link or hash<input value={castLink} onChange={e => { setCastLink(e.target.value); save(castKey, e.target.value) }} placeholder="https://farcaster.xyz/…" /></label>
             <Button disabled={locked || !identity || !castLink.trim() || network.moved} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
         </Card>
@@ -312,7 +311,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
       {tab === "network" && <>
         <Card title="Validators" help={() => setGuide("network")}><dl className="v4-stats"><Stat label="Active validator bond">{tokens(network.totalBond, 0)}</Stat><Stat label="Minimum network bond">1,000,000</Stat><Stat label="Certificate threshold">More than ⅔</Stat><Stat label="Current day">{String(network.day)}</Stat></dl>
 </Card>
-        <Card title="Rewards" help={() => setGuide("rewards")}><dl className="v4-stats"><Stat label="Follower weight">×1 to ×100</Stat><Stat label="Node">×5</Stat><Stat label="Invites">Up to ×2</Stat><Stat label="Burn boost">Up to ×200 total</Stat><Stat label="Wallet cap">1% of the pool</Stat><Stat label="Unshared pool">95% DAO, 5% stakers</Stat></dl></Card>
+        <Card title="Rewards" help={() => setGuide("rewards")}><dl className="v4-stats"><Stat label="Followers">×1 to ×10</Stat><Stat label="Likes and recasts">×0 to ×10</Stat><Stat label="Node">×3</Stat><Stat label="Invites">Up to ×2</Stat><Stat label="Burn boost">Up to ×200 total</Stat><Stat label="Wallet cap">1% of the pool</Stat><Stat label="Unshared pool">95% DAO, 5% stakers</Stat></dl></Card>
       </>}
       {tab === "token" && <>
         <Card title="TOKENCAST" help={() => setGuide("token")}><div className="v4-reward">{account ? tokens(network.balance) : "—"} <small>in your wallet</small></div>
@@ -321,20 +320,19 @@ function ConnectedV4({ config }: { config: V4Config }) {
         <Card title="V4 contracts"><div className="v4-addresses">{(["token", "distributor", "staking", "dao", "registry"] as const).map(key => <a key={key} href={`${explorer}/address/${config[key]}`} target="_blank" rel="noreferrer"><span>{key}</span><code>{short(config[key])}</code><ExternalLink size={14} /></a>)}</div><p className="v4-muted">{chain.name}, block {String(network.blockNumber)}</p></Card>
       </>}
       {tab === "dao" && <>
-        <Card title="Stake" help={() => setGuide("staking")}><dl className="v4-stats"><Stat label="Total staked">{tokens(network.totalStaked)}</Stat><Stat label="Your stake">{tokens(stake?.balance ?? 0n)}</Stat><Stat label="Voting power activated">{tokens(stake?.activePower ?? 0n)}</Stat><Stat label="Staking reward pool">{tokens(network.rewardLiability)}</Stat></dl>
+        <Card title="Stake" help={() => setGuide("staking")}><dl className="v4-stats"><Stat label="Total staked">{tokens(network.totalStaked)}</Stat><Stat label="Your stake">{tokens(stake?.balance ?? 0n)}</Stat><Stat label="Your voting power">{tokens(stake?.votingPower ?? 0n)}</Stat><Stat label="Staking reward pool">{tokens(network.rewardLiability)}</Stat></dl>
           <label>Amount (TOKENCAST)<input inputMode="decimal" placeholder="0.00" value={stakeAmount} onChange={e => setStakeAmount(e.target.value)} /></label>
           <div className="v4-actions"><Button disabled={locked || !stakeAmount} onClick={() => void amountAction("stake")}>Stake</Button><Button disabled={locked || !stakeAmount || !stake || timestamp < stake.lockedUntil} secondary onClick={() => void amountAction("withdraw")}>Withdraw</Button></div>
-          <p className="v4-muted">Each top-up locks your whole stake for 30 days.</p>
+          <p className="v4-muted">Each top-up locks your whole stake for 30 days. Staked tokens vote once they are 30 days old.</p>
           {stake && stake.balance > 0n && <p className="v4-muted">{timestamp < stake.lockedUntil ? `Locked until ${date(stake.lockedUntil)}` : "Your stake is unlocked."}</p>}
-          <Button secondary disabled={locked || !stake || stake.balance === 0n || stake.activePower === stake.balance || timestamp < stake.lockedUntil} onClick={() => void transact({ kind: "activatePower" })}>Activate voting power</Button>
           <details><summary>Staking rewards</summary><label>Reward epoch<input inputMode="numeric" value={epochInput} placeholder={String(stake?.epoch ?? 0)} onChange={e => setEpochInput(e.target.value)} /></label>
             <p>Available: {tokens(stake?.claimable ?? 0n)} TOKENCAST</p><Button disabled={locked || !stake || stake.claimable === 0n} onClick={() => stake && void transact({ kind: "claimStake", epoch: stake.epoch })}>Claim staking reward</Button>
             {stake && <Button secondary disabled={locked || timestamp < network.launch + (stake.nextEpoch + 1n) * 30n * DAY} onClick={() => void transact({ kind: "finalizeEpoch", epoch: stake.nextEpoch })}>Prepare epoch {String(stake.nextEpoch)} rewards</Button>}
             {stake?.canSweep && <Button secondary disabled={locked} onClick={() => void transact({ kind: "sweepEpoch", epoch: stake.epoch })}>Roll expired rewards forward</Button>}
             <Button secondary disabled={locked} onClick={() => void transact({ kind: "revokeApproval" })}>Remove staking approval</Button></details>
         </Card>
-        <Card title="Monthly vote" help={() => setGuide("votes")}><label>Month (UTC · YYYYMM)<input inputMode="numeric" value={monthInput} placeholder={String(dao?.month ?? monthAt(timestamp))} onChange={e => setMonthInput(e.target.value)} /></label>
-          <div className="v4-chips">{[monthAt(timestamp), previousMonth(monthAt(timestamp)), previousMonth(previousMonth(monthAt(timestamp)))].map(m => <button key={String(m)} onClick={() => setMonthInput(String(m))}>{String(m)}</button>)}</div>
+        <Card title="Monthly vote" help={() => setGuide("votes")}>
+          <div className="v4-chips">{[monthAt(timestamp), previousMonth(monthAt(timestamp)), previousMonth(previousMonth(monthAt(timestamp)))].map(m => <button key={String(m)} type="button" aria-pressed={(dao?.month ?? monthAt(timestamp)) === m} onClick={() => setMonthInput(String(m))}>{String(m).slice(4)}/{String(m).slice(0, 4)}</button>)}</div>
           {dao && <><div className="v4-row"><h3>{dao.airdrop ? "Miner airdrop" : "Treasury burn"}</h3><span className="mc-era">{dao.settled ? "Settled" : dao.voteEnd === 0n ? "Not opened" : timestamp < dao.voteEnd ? "Voting open" : "Voting closed"}</span></div>
             <dl className="v4-stats"><Stat label="Yes">{tokens(dao.yes, 0)}</Stat><Stat label="No">{tokens(dao.no, 0)}</Stat><Stat label="Your snapshot power">{tokens(dao.power, 0)}</Stat><Stat label="Round budget">{tokens(dao.budget, 0)}</Stat></dl>
             <div className="v4-actions"><Button disabled={locked || dao.voted || dao.power === 0n || timestamp >= dao.voteEnd} onClick={() => void transact({ kind: "vote", month: dao.month, yes: true })}>{dao.voted ? "Vote recorded" : "Yes"}</Button><Button secondary disabled={locked || dao.voted || dao.power === 0n || timestamp >= dao.voteEnd} onClick={() => void transact({ kind: "vote", month: dao.month, yes: false })}>No</Button></div>
@@ -350,15 +348,15 @@ function ConnectedV4({ config }: { config: V4Config }) {
         </Card>
         {config.governor && <Card title="Treasury" help={() => setGuide("treasury")}>
           {gov ? <><dl className="v4-stats"><Stat label="Balance">{tokens(gov.treasury.balance, 0)}</Stat><Stat label="Reserved for monthly votes">{tokens(gov.treasury.reserved, 0)}</Stat>
-            <Stat label="Majority can still spend">{tokens(gov.treasury.capRemaining, 0)}</Stat><Stat label="Spent this period">{tokens(gov.treasury.spent, 0)}</Stat></dl>
-            <p className="v4-muted">Spending period ends {date(gov.treasury.periodEnd)}</p></>
+            <Stat label="Majority can still spend">{tokens(gov.treasury.capRemaining, 0)}</Stat><Stat label="Two thirds can spend">{tokens(gov.treasury.largeRemaining, 0)}</Stat></dl>
+            <p className="v4-muted">Both limits refill gradually after each spend.</p></>
             : <p className="v4-muted">{govError || "Reading the treasury…"}</p>}
         </Card>}
         {gov && <Card title="Proposals">
           {gov.proposals.length === 0 && <p className="v4-muted">No proposals yet.</p>}
           {gov.proposals.map(p => {
             const open = p.state === "Active"
-            const when = p.state === "Pending" ? `Voting starts about ${date(blockTime(network, p.snapshot))}` : open ? `Voting ends about ${date(blockTime(network, p.deadline))}`
+            const when = p.state === "Pending" ? `Voting starts ${date(p.snapshot)}` : open ? `Voting ends ${date(p.deadline)}`
               : p.state === "Queued" ? `Executable from ${date(p.eta)}` : ""
             return <div key={String(p.id)} className="v4-proposal">
               <div className="v4-row"><h3>{p.description.split("\n")[0].slice(0, 120)}</h3><span className="mc-era">{p.state}</span></div>
@@ -370,7 +368,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
               {open && p.voted && <p className="v4-success">Your vote is recorded.</p>}
               {open && !p.voted && <div className="v4-actions">{([1, 0, 2] as const).map(support => <Button key={support} secondary={support !== 1} disabled={locked || p.power === 0n}
                 onClick={() => void transact({ kind: "castVote", proposalId: p.id, support })}>{["Against", "For", "Abstain"][support]}</Button>)}</div>}
-              {open && !p.voted && account && p.power === 0n && <p className="v4-muted">You had no active voting power when this vote started.</p>}
+              {open && !p.voted && account && p.power === 0n && <p className="v4-muted">You had no voting power when this vote started.</p>}
               {open && p.power > 0n && <p className="v4-muted">Your voting power: {tokens(p.power, 0)}</p>}
               {p.state === "Succeeded" && <Button disabled={locked} onClick={() => void transact({ kind: "queueProposal", ...calls(p) })}>Queue for execution</Button>}
               {p.state === "Queued" && <Button disabled={locked || timestamp < p.eta} onClick={() => void transact({ kind: "executeProposal", ...calls(p) })}>Execute</Button>}
@@ -384,15 +382,15 @@ function ConnectedV4({ config }: { config: V4Config }) {
           <label>Description<textarea rows={4} maxLength={4000} value={proposalText} placeholder="What the money is for, who receives it and how results will be reported. The first line is the title." onChange={e => setProposalText(e.target.value)} /></label>
           {proposalWei !== null && proposalWei > 0n && <p className="v4-muted">{proposalWei > gov.treasury.unreserved ? "More than the unreserved treasury."
             : proposalLarge ? "Needs two thirds: above the 5% a majority may spend this period." : "A simple majority decides."}
-            {" "}Voting opens in about {span(gov.votingDelay * BLOCK_SECONDS)}, lasts about {span(gov.votingPeriod * BLOCK_SECONDS)}, then {span(gov.timelockDelay)} of timelock.</p>}
-          {!canPropose && <p className="v4-muted">{`Needs ${tokens(gov.threshold, 0)} active voting power or an active node. You have ${tokens(gov.votes, 0)}.`}</p>}
+            {" "}Voting opens in {span(gov.votingDelay)}, lasts {span(gov.votingPeriod)}, then {span(gov.timelockDelay)} of timelock.</p>}
+          {!canPropose && <p className="v4-muted">{`Needs ${tokens(gov.threshold, 0)} voting power or an active node. You have ${tokens(gov.votes, 0)}.`}</p>}
           <Button disabled={locked || !canPropose || !proposalValid} onClick={() => void submitProposal()}>Submit proposal</Button>
         </Card>}
       </>}
     </main>}
     <nav className="v4-nav" aria-label="Main navigation">{[["mine", "Mine", FarcasterIcon], ["network", "Network", Radio], ["token", "Token", Layers], ["dao", "DAO", Vote]].map(([key, label, Icon]) => {
       const Glyph = Icon as typeof FarcasterIcon
-      return <button key={String(key)} type="button" aria-current={tab === key ? "page" : undefined} onClick={() => { setTab(String(key)); setGuide(null); window.scrollTo(0, 0) }}><Glyph /><span>{String(label)}</span></button>
+      return <button key={String(key)} type="button" aria-current={!guide && tab === key ? "page" : undefined} onClick={() => { setTab(String(key)); setGuide(null); window.scrollTo(0, 0) }}><Glyph /><span>{String(label)}</span></button>
     })}</nav>
   </div></div>
 }

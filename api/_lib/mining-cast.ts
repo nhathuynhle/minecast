@@ -64,9 +64,18 @@ export async function lookupMiningCast(value: unknown, key: string): Promise<Min
   throw new CastLookupError("Your cast is not available for verification yet. Retry this cast in a moment; do not post again.", 503);
 }
 
-export function requireRecentCast(cast: MiningCast, now: number): void {
+export function requireRecentCast(cast: MiningCast, now: number, maxAgeMinutes = 24 * 60): void {
   const publishedAt = Date.parse(cast.timestamp ?? "");
-  if (!Number.isFinite(publishedAt) || publishedAt < now - 24 * 60 * 60 * 1000 || publishedAt > now + 5 * 60 * 1000) {
-    throw new CastLookupError("Use a new cast published within the last 24 hours to start mining.", 400);
+  if (!Number.isFinite(publishedAt) || publishedAt < now - maxAgeMinutes * 60 * 1000 || publishedAt > now + 5 * 60 * 1000) {
+    const age = maxAgeMinutes >= 120 ? `${maxAgeMinutes / 60} hours` : `${maxAgeMinutes} minutes`;
+    throw new CastLookupError(`Use a new cast published within the last ${age} to start mining.`, 400);
   }
+}
+
+// Duplicate key, as nodes compute it from Snapchain (research/v4/node/farcaster-source.mjs textKey): the first 10
+// letters or digits, case-folded. Neynar writes mentions into the text while Snapchain keeps them apart, so drop them.
+// shortcut: plain text that looks like "@name" is dropped too; nodes have the final say, this only blocks early.
+export function castTextKey(text: string | undefined): string {
+  const plain = (text ?? "").replace(/(^|\s)@[a-z0-9][a-z0-9.-]*/gi, "$1")
+  return Array.from(plain.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "")).slice(0, 10).join("")
 }

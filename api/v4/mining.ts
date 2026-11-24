@@ -1,5 +1,5 @@
 import { json, requireFarcasterUser, requireWallet, supabase } from "../_lib/backend"
-import { CastLookupError, lookupMiningCast, requireRecentCast } from "../_lib/mining-cast"
+import { CastLookupError, castTextKey, lookupMiningCast, requireRecentCast } from "../_lib/mining-cast"
 import { serverV4Config, gateV4, scopeV4, sessionsV4, sessionColumns, identityV4 } from "../_lib/v4"
 
 export const config = { runtime: "edge" }
@@ -58,18 +58,22 @@ export default async function handler(request: Request) {
     const prior = sessions.find(s => s.cast_hash === cast.hash.toLowerCase())
     if (prior) {
       if (prior.wallet_address.toLowerCase() !== wallet.toLowerCase()) return respond({ error: "This cast already uses another payout wallet." }, 409)
+      // The distributor refuses a cast on a second cohort day, so only resume today's session.
+      const { network } = await gateV4(deployment, sessions)
+      if (BigInt(prior.day) !== network.day) return respond({ error: "This cast was used for an earlier day. Post a new cast for today." }, 409)
       return respond({ ...identityV4(deployment), session: prior, resumed: true })
     }
     const gate = await gateV4(deployment, sessions)
     if (!gate.eligible) return respond({ error: gate.reason }, 409)
-    requireRecentCast(cast, Number(gate.network.timestamp) * 1000)
+    requireRecentCast(cast, Number(gate.network.timestamp) * 1000, 30) // nodes reward a cast posted at most 30 minutes before its session
     // The server chooses time and cohort from Base, never a browser reward/day/timer.
     const followers = cast.author.follower_count ?? cast.author.followerCount
-    const result = await supabase("rpc/start_v4_mining_session_with_estimate", { method: "POST", body: JSON.stringify({
+    // A cast whose first 10 letters or digits repeat an earlier cast today is refused here; nodes drop it anyway.
+    const result = await supabase("rpc/start_v4_mining_session_with_text", { method: "POST", body: JSON.stringify({
       p_chain_id: deployment.chainId, p_distributor: deployment.distributor.toLowerCase(), p_fid: fid,
       p_wallet: wallet.toLowerCase(), p_cast_hash: cast.hash.toLowerCase(), p_day: Number(gate.network.day),
       p_started_at: new Date(Number(gate.network.timestamp) * 1000).toISOString(),
-      p_follower_count: Number.isSafeInteger(followers) && followers! >= 0 ? followers : null,
+      p_follower_count: Number.isSafeInteger(followers) && followers! >= 0 ? followers : null, p_text_key: castTextKey(cast.text),
     }) })
     const row = await result.json()
     return respond({ ...identityV4(deployment), session: Array.isArray(row) ? row[0] : row }, 201)
@@ -77,6 +81,7 @@ export default async function handler(request: Request) {
     if (error instanceof CastLookupError) return respond({ error: error.message }, error.status)
     const message = error instanceof Error ? error.message : "Session verification unavailable."
     if (/authenticat|token is invalid/i.test(message)) return respond({ error: message }, 401)
+    if (/repeats an earlier cast/i.test(message)) return respond({ error: "Your cast repeats one posted earlier today. Post a new cast in your own words." }, 409)
     if (/active session|already|wallet is linked|23505/i.test(message)) return respond({ error: "A session already exists or this payout wallet is linked to another miner. Refresh your session before retrying." }, 409)
     if (/v4_mining_sessions|start_v4_mining_session|get_v4_mining_stats|schema cache|does not exist/i.test(message)) return respond({ error: "V4 session storage needs its latest migrations. Claims and DAO remain available directly onchain." }, 503)
     return respond({ error: "V4 session verification is temporarily unavailable. Retry this cast in a moment." }, 503)
