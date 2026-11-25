@@ -13,6 +13,7 @@ interface IMonthlyMiningV4 {
     function monthFinalized(uint256 month) external view returns (bool);
     function totalClaimedByMonth(uint256 month) external view returns (uint256);
     function claimedByMonth(uint256 month, address miner) external view returns (uint256);
+    function finalizeMonth(uint256 nextMonthStart) external;
 }
 
 /// @notice Community treasury. Two fixed monthly actions (odd-month airdrop, even-month burn) plus
@@ -98,7 +99,11 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
         uint256 lastMonth = block.timestamp - date * 1 days;
         uint256 launch = token.launchTime();
         IMonthlyMiningV4 mining = IMonthlyMiningV4(token.distributorForDay(lastMonth < launch ? 0 : (lastMonth - launch) / 1 days));
-        if (address(mining) == address(0) || !mining.monthFinalized(previous)) revert InvalidRound();
+        if (address(mining) == address(0)) revert InvalidRound();
+        // No keeper needed: the opener closes last month's ledger (reverts until it is final) and settles last
+        // month's round, whose vote and timelock ended long before the 17th, so its reservation is released.
+        if (!mining.monthFinalized(previous)) mining.finalizeMonth(block.timestamp - block.timestamp % 1 days - (date - 1) * 1 days);
+        if (rounds[previous].voteEnd != 0 && !rounds[previous].settled) _settle(rounds[previous], previous);
         r.mining = address(mining);
         r.miningMonth = previous;
         r.mined = mining.totalClaimedByMonth(previous);
@@ -131,8 +136,12 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
     function settle(uint256 month) external nonReentrant {
         Round storage r = rounds[month];
         if (r.voteEnd == 0 || block.timestamp < r.voteEnd || r.settled) revert InvalidRound();
+        if (r.yes > r.no && block.timestamp < r.voteEnd + TIMELOCK) revert InvalidRound();
+        _settle(r, month);
+    }
+
+    function _settle(Round storage r, uint256 month) private {
         bool passed = r.yes > r.no;
-        if (passed && block.timestamp < r.voteEnd + TIMELOCK) revert InvalidRound();
         r.settled = true;
         if (passed && r.airdrop) {
             r.claimEnd = uint64(block.timestamp + AIRDROP_WINDOW);
@@ -147,6 +156,8 @@ contract MineCastOpenDaoV4 is ReentrancyGuard {
     /// @notice Prior-month claimed mining determines the caller's share; no backend approval.
     function claimAirdrop(uint256 month) external nonReentrant returns (uint256 amount) {
         Round storage r = rounds[month];
+        // The first claimer settles a passed airdrop once its timelock is over.
+        if (r.voteEnd != 0 && !r.settled && block.timestamp >= r.voteEnd + TIMELOCK) _settle(r, month);
         if (block.timestamp >= r.claimEnd || collected[month][msg.sender]) revert NothingToClaim();
         uint256 share = IMonthlyMiningV4(r.mining).claimedByMonth(r.miningMonth, msg.sender);
         amount = r.budget * share / r.mined;

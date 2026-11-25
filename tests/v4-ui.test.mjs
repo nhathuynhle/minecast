@@ -28,6 +28,8 @@ test('session, report review, activation and expiry are separate phases', () => 
     resultWindow: 8n * state.DAY, certifiedAt: 0n, reviewPeriod: 2n * state.DAY, published: 0n, leafCount: 2n }
   const session = { ends_at: new Date(100000 * 1000).toISOString() }
   assert.equal(state.miningPhase(d, 99999n, session), 'mining')
+  assert.equal(state.miningPhase({ ...d, started: false }, 99999n, session), 'unconfirmed') // recorded by the server, not opened onchain
+  assert.equal(state.miningPhase({ ...d, started: true }, 99999n, session), 'mining')
   assert.equal(state.miningPhase(d, 100000n, session), 'waiting')
   const cert = { ...d, certifiedAt: 200000n }
   assert.equal(state.miningPhase(cert, 200100n, session), 'publishing')

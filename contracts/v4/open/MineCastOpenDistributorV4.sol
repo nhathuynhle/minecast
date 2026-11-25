@@ -389,13 +389,16 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     }
 
     /// @notice Open exactly one claim window after quorum, full publication and public review.
-    function activateDay(uint256 day) external nonReentrant {
+    function activateDay(uint256 day) external nonReentrant { if (!_activate(day)) revert InvalidPhase(); }
+
+    /// @dev Also run by the first claim of a ready day, so claims never wait for a keeper.
+    function _activate(uint256 day) private returns (bool) {
         Day storage d = _days[day];
         uint256 certifiedAt = _certificates[d.digest].certifiedAt; // zero again after quorum lost to evidence
         if (d.digest == 0 || d.contested || d.claimEnd != 0 || block.timestamp >= dayEnd(day) + RESULT_WINDOW
             || certifiedAt == 0 || block.timestamp < certifiedAt + REVIEW_PERIOD
             || d.published != d.report.leafCount || d.observedWeight != d.report.totalWeight
-            || d.observedAllocation != d.report.allocated) revert InvalidPhase();
+            || d.observedAllocation != d.report.allocated) return false;
         d.claimEnd = uint64(block.timestamp + CLAIM_WINDOW);
         uint256 surplus = token.dailyEmissionForDay(day) - d.report.allocated;
         uint256 stakeReward = surplus * 5 / 100;
@@ -408,6 +411,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
         }
         if (daoReward != 0) token.issue(day, address(treasury), daoReward);
         emit DayActivated(day, d.claimEnd, d.report.allocated, stakeReward, daoReward);
+        return true;
     }
 
     /// @notice Claim the caller's published allocation directly, with no server, signature or proof download.
@@ -422,6 +426,7 @@ contract MineCastOpenDistributorV4 is EIP712, ReentrancyGuard {
     function _claim(uint256 day, bool strict) private {
         Day storage d = _days[day];
         Session storage a = sessions[day][msg.sender];
+        if (d.claimEnd == 0) _activate(day);
         if (d.claimEnd == 0 || block.timestamp >= d.claimEnd || a.claimed || a.amount == 0) {
             if (strict) revert InvalidPhase();
             return;

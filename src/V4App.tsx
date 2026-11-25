@@ -15,8 +15,8 @@ import "./v4.css"
 
 const configuration = parseV4Config(import.meta.env)
 const labels: Record<MiningPhase, string> = {
-  mining: "Mining · your session ends at 00:00 UTC", waiting: "Waiting for daily report", publishing: "Publishing rewards", review: "Report under review",
-  activate: "Ready to open claims", claimable: "Ready to claim", claimed: "Reward claimed", expired: "Claim window ended",
+  mining: "Mining · your session ends at 00:00 UTC", unconfirmed: "Not started onchain yet", waiting: "Waiting for daily report", publishing: "Publishing rewards", review: "Report under review",
+  activate: "Ready to claim", claimable: "Ready to claim", claimed: "Reward claimed", expired: "Claim window ended",
   excluded: "No allocation for this wallet", contested: "Report disputed", missed: "Daily report deadline passed",
 }
 const date = (seconds: bigint) => seconds > 0n ? new Date(Number(seconds) * 1000).toLocaleString() : "—"
@@ -218,11 +218,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
     try { await navigator.clipboard.writeText(link); setInviteNote("Invite link copied") } catch { setInviteNote(link) }
   }
 
-  async function postCast(recover: boolean) {
+  async function postCast(recover: boolean, cast?: string) {
     if (!identity || !account || actionBusy.current || locked) return
     actionBusy.current = true; setBusy(true); setSessionError("")
     try {
-      let identifier = recover ? castLink.trim() : ""
+      let identifier = recover ? (cast ?? castLink).trim() : ""
       if (!identifier) {
         // The intake server is an optional helper; the contract itself enforces one session per wallet per UTC day.
         const gateResponse = await farcasterFetch("/api/v4/mining", { signal: AbortSignal.timeout(12000) }).catch(() => null)
@@ -248,9 +248,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
       } catch (e) { if (!castHash) throw e }
       // Nodes verify and reward only the onchain session; Base sets its start time.
       // Rewards from earlier days ride along in the same transaction, so a daily miner pays gas once a day.
-      const claimDays = network ? await claimableDays(client, config, network, account).catch(() => []) : []
+      const claimDays = network ? await claimableDays(client, config, network, account, true).catch(() => []) : []
       // An invite link is recorded once, at the invitee's own session; the contract ignores it after that.
       const inviter = invitedBy && network?.inviter === zeroAddress && invitedBy.toLowerCase() !== account.toLowerCase() ? invitedBy : undefined
+      // shortcut: assumes the wallet pays its own gas (the Farcaster wallet does); drop this if a paymaster is added.
+      if (await client.getBalance({ address: account }) === 0n) throw Error(`Your wallet has no ETH on ${chain.name} to pay the fee. Add a little, then tap Start session onchain.`)
       if (!await executeV4Action(client, config, account, { kind: "startMining", fid: BigInt(identity.fid), castHash: castHash as `0x${string}`, claimDays, inviter }, updateTransaction, remember)) return
       save(castKey, null); setCastLink(""); if (day) setDayInput(day); await refresh()
     } catch (e) { await refresh(); setSessionError(friendlyV4Error(e)) }
@@ -278,8 +280,11 @@ function ConnectedV4({ config }: { config: V4Config }) {
           {phase === "claimable" && dayData && <><div className="v4-reward">{tokens(dayData.amount)} <small>TOKENCAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button><p className="v4-muted">Claim by {date(dayData.claimEnd)}</p></>}
           {ready.some(day => day !== dayData?.day) && <><p className="v4-muted">Earlier rewards ready: day {ready.join(", ")}</p>
             <Button secondary disabled={locked} onClick={() => void transact({ kind: "claimMany", days: ready })}><ArrowDownToLine size={18} />Claim earlier rewards</Button></>}
+          {phase === "unconfirmed" && session && <><p className="v4-muted">Your cast is recorded, but nodes only count a session opened onchain. Open it within 30 minutes of posting.</p><Button disabled={locked || busy} onClick={() => void postCast(true, session.cast_hash)}>Start session onchain</Button></>}
           {phase === "claimed" && dayData && <p className="v4-success">{tokens(dayData.amount)} TOKENCAST claimed onchain.</p>}
-          {phase === "activate" && dayData && <><Button disabled={locked} onClick={() => void transact({ kind: "activateDay", day: dayData.day })}>Open claim window</Button></>}
+          {phase === "activate" && dayData && (dayData.amount > 0n // the first claim opens the day's claim window
+            ? <><div className="v4-reward">{tokens(dayData.amount)} <small>TOKENCAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button></>
+            : <p className="v4-muted">No allocation for this wallet.</p>)}
           {phase === "publishing" && dayData && <p className="v4-muted">{String(dayData.published)} / {String(dayData.leafCount)} allocations published.</p>}
           {dayData && !dayData.certifiedAt && session && ["mining", "waiting"].includes(phase ?? "") && <div className="v4-estimate" aria-live="polite">
             <span className="v4-muted">{network.totalBond < 10n ** 24n ? "Trial day, no reward" : "Likes and recasts from accounts 30+ days old count until 00:00 UTC"}</span>
@@ -340,7 +345,6 @@ function ConnectedV4({ config }: { config: V4Config }) {
             {dao.claimable > 0n && <Button disabled={locked} onClick={() => void transact({ kind: "claimAirdrop", month: dao.month })}>Claim {tokens(dao.claimable)} airdrop</Button>}
             {dao.airdrop && dao.voteEnd > 0n && dao.mined > 0n && !dao.eligible && <p className="v4-muted">Not eligible: less than {tokens(dao.mined / 3n)} was staked when this round opened.</p>}
             {dao.canSettle && <Button secondary disabled={locked} onClick={() => void transact({ kind: "settleVote", month: dao.month })}>Execute vote result</Button>}
-            {dao.canFinalizeMonth && <Button secondary disabled={locked} onClick={() => void transact({ kind: "finalizeMonth", timestamp: monthStart(dao.month) })}>Close prior mining month</Button>}
             {dao.canOpen && <Button secondary disabled={locked} onClick={() => void transact({ kind: "openVote" })}>Open this month's vote</Button>}
             {dao.claimEnd > 0n && <p className="v4-muted">Airdrop claims end {date(dao.claimEnd)}</p>}
             {dao.claimEnd > 0n && timestamp >= dao.claimEnd && dao.remaining > 0n && <Button secondary disabled={locked} onClick={() => void transact({ kind: "releaseAirdrop", month: dao.month })}>Release expired airdrop reserve</Button>}

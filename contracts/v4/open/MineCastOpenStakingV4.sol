@@ -80,6 +80,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     /// @notice Funding always targets a future boundary; no caller may redirect old rewards.
     function fundFutureRewards(uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
+        _finalizeDue();
         uint256 epoch = currentEpoch() + 1;
         scheduledRewards[epoch] += amount;
         rewardLiability += amount;
@@ -91,6 +92,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     ///         already earned is kept.
     function stake(uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
+        _finalizeDue();
         totalStaked += amount;
         stakedBalance[msg.sender] += amount;
         lockedUntil[msg.sender] = uint64(block.timestamp + MINIMUM_LOCK);
@@ -105,6 +107,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     function withdraw(uint256 amount) external nonReentrant {
         if (amount == 0 || amount > stakedBalance[msg.sender]) revert InvalidAmount();
         if (block.timestamp < lockedUntil[msg.sender]) revert Locked();
+        _finalizeDue();
         totalStaked -= amount;
         stakedBalance[msg.sender] -= amount;
         _record(msg.sender);
@@ -153,6 +156,16 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     /// @notice Anyone may catch up missed epochs in order; no cron signer is privileged.
     function finalizeEpoch(uint256 epoch) external {
         if (epoch != nextEpochToFinalize || block.timestamp < epochStart(epoch + 1)) revert InvalidPhase();
+        _finalize(epoch);
+    }
+
+    /// @dev No keeper needed: stake, withdraw, claim and the daily reward funding close due epochs in order.
+    ///      At most four per call bounds gas; finalizeEpoch catches up anything older.
+    function _finalizeDue() private {
+        for (uint256 i; i < 4 && block.timestamp >= epochStart(nextEpochToFinalize + 1); ++i) _finalize(nextEpochToFinalize);
+    }
+
+    function _finalize(uint256 epoch) private {
         Epoch storage e = epochs[epoch];
         if (!e.snapshotTaken) snapshotEpoch(epoch);
         // Only stake held through the whole epoch earns it: min(start, end), so a stake timed across two
@@ -175,6 +188,7 @@ contract MineCastOpenStakingV4 is ReentrancyGuard {
     }
 
     function claim(uint256 epoch) external nonReentrant returns (uint256 amount) {
+        _finalizeDue();
         Epoch storage e = epochs[epoch];
         if (!e.finalized || e.claimEnd == 0 || block.timestamp >= e.claimEnd || claimed[epoch][msg.sender]) revert InvalidPhase();
         uint256 held = _stakes[msg.sender].upperLookup(e.snapshotTime);

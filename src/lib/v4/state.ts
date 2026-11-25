@@ -3,10 +3,10 @@ export type V4Session = { id: string; fid: number; wallet_address: string; cast_
   follower_count?: number | null; estimated_weight?: number | null; follower_observed_at?: string | null }
 export type MiningDay = {
   day: bigint; digest: string; allocated: bigint; published: bigint; leafCount: bigint; totalWeight: bigint;
-  certifiedAt: bigint; claimEnd: bigint; contested: boolean; fid: bigint; amount: bigint; claimed: boolean;
+  certifiedAt: bigint; claimEnd: bigint; contested: boolean; fid: bigint; amount: bigint; claimed: boolean; started?: boolean;
   pool: bigint; end: bigint; reviewPeriod: bigint; resultWindow: bigint; commitWindow: bigint
 }
-export type MiningPhase = "mining" | "waiting" | "publishing" | "review" | "activate" | "claimable" | "claimed" | "expired" | "excluded" | "contested" | "missed"
+export type MiningPhase = "mining" | "unconfirmed" | "waiting" | "publishing" | "review" | "activate" | "claimable" | "claimed" | "expired" | "excluded" | "contested" | "missed"
 export function miningPhase(d: MiningDay, timestamp: bigint, session?: V4Session): MiningPhase {
   if (d.claimed) return "claimed"
   if (d.claimEnd > 0n) {
@@ -15,7 +15,8 @@ export function miningPhase(d: MiningDay, timestamp: bigint, session?: V4Session
   }
   if (d.contested) return "contested"
   if (timestamp >= d.end + d.resultWindow) return "missed"
-  if (session && timestamp < BigInt(Math.floor(Date.parse(session.ends_at) / 1000))) return "mining"
+  // The intake server records the cast first; only the onchain session counts, so say so until it exists.
+  if (session && timestamp < BigInt(Math.floor(Date.parse(session.ends_at) / 1000))) return d.started === false ? "unconfirmed" : "mining"
   if (d.certifiedAt === 0n) return "waiting"
   if (d.published < d.leafCount) return "publishing"
   return timestamp < d.certifiedAt + d.reviewPeriod ? "review" : "activate"

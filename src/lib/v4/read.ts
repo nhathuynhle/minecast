@@ -53,9 +53,10 @@ export type V4Network = Awaited<ReturnType<typeof readV4Network>>
 export async function readV4Day(client: PublicClient, config: V4Config, network: V4Network, day: bigint, account?: Address): Promise<MiningDay> {
   if (day < 0n || day > network.day) throw Error("Choose a mining day between 0 and the current day.")
   const blockNumber = network.blockNumber
-  const [info, allocation, pool, reviewPeriod, resultWindow, commitWindow] = await Promise.all([
+  const [info, allocation, onchain, pool, reviewPeriod, resultWindow, commitWindow] = await Promise.all([
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "dayInfo", args: [day], blockNumber }),
     account ? client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "allocations", args: [day, account], blockNumber }) : [0n, 0n, false] as const,
+    account ? client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "sessions", args: [day, account], blockNumber }) : null,
     client.readContract({ address: config.token, abi: tokenAbi, functionName: "dailyEmissionForDay", args: [day], blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "REVIEW_PERIOD", blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "RESULT_WINDOW", blockNumber }),
@@ -64,17 +65,18 @@ export async function readV4Day(client: PublicClient, config: V4Config, network:
   const [, certifiedAt] = await client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "certificate", args: [info.digest], blockNumber })
   return { day, digest: info.digest, allocated: info.report.allocated, totalWeight: info.report.totalWeight, published: info.published,
     leafCount: info.report.leafCount, certifiedAt, claimEnd: info.claimEnd, contested: info.contested,
-    fid: allocation[0], amount: allocation[1], claimed: allocation[2], pool, end: network.launch + (day + 1n) * DAY, reviewPeriod, resultWindow, commitWindow }
+    fid: allocation[0], amount: allocation[1], claimed: allocation[2], started: !!onchain && onchain[3] !== 0n, pool, end: network.launch + (day + 1n) * DAY, reviewPeriod, resultWindow, commitWindow }
 }
 
 /** Earlier days whose 7-day claim window is open for `account`; a day can stay claimable ~16 days after it ends. */
-export async function claimableDays(client: PublicClient, config: V4Config, network: V4Network, account: Address) {
+/** With `unopened`, also days whose claim window no claim has opened yet; the session transaction skips any that are not ready. */
+export async function claimableDays(client: PublicClient, config: V4Config, network: V4Network, account: Address, unopened = false) {
   const days = Array.from({ length: 17 }, (_, i) => network.day - 1n - BigInt(i)).filter(day => day >= 0n)
   const rows = await Promise.all(days.map(day => Promise.all([
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "dayInfo", args: [day], blockNumber: network.blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "allocations", args: [day, account], blockNumber: network.blockNumber }),
   ])))
-  return days.filter((_, i) => rows[i][0].claimEnd > network.timestamp && rows[i][1][1] > 0n && !rows[i][1][2]).reverse()
+  return days.filter((_, i) => (rows[i][0].claimEnd > network.timestamp || (unopened && rows[i][0].claimEnd === 0n)) && rows[i][1][1] > 0n && !rows[i][1][2]).reverse()
 }
 
 export async function readV4Stake(client: PublicClient, config: V4Config, network: V4Network, epoch: bigint, account?: Address) {
@@ -116,10 +118,12 @@ export async function readV4Dao(client: PublicClient, config: V4Config, network:
     settled: r[4], budget: r[8], remaining: r[9], yes: r[10], no: r[11], voted, collected, power, monthFinalized,
     // Month ledgers close after the last cohort's 8-day result window and 7-day claim window (+1 day).
     canFinalizeMonth: !monthFinalized && monthStart(month) > network.launch && network.timestamp >= monthStart(month) + 16n * DAY,
-    canOpen: month === monthAt(network.timestamp) && date >= 8 && date <= 28 && monthFinalized && r[1] === 0n,
+    // Opening closes last month's ledger itself (the DAO calls finalizeMonth), so only the calendar gates it.
+    canOpen: month === monthAt(network.timestamp) && date >= 17 && date <= 28 && (monthFinalized || monthStart(month) > network.launch) && r[1] === 0n,
     canSettle: r[1] > 0n && !r[4] && network.timestamp >= r[1] + (r[10] > r[11] ? 3n * DAY : 0n),
     mined: share, eligible,
-    claimable: account && eligible && r[2] > network.timestamp && !collected && r[7] > 0n ? r[8] * share / r[7] : 0n }
+    // A passed airdrop past its timelock is settled by its first claim.
+    claimable: account && eligible && (r[2] > network.timestamp || (r[3] && !r[4] && r[10] > r[11] && network.timestamp >= r[1] + 3n * DAY)) && !collected && r[7] > 0n ? r[8] * share / r[7] : 0n }
 }
 export type V4Dao = Awaited<ReturnType<typeof readV4Dao>>
 

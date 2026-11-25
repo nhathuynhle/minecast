@@ -101,8 +101,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
     await send(mining, 'publishAllocations', [day, bundle.entries, bundle.proofs])
     const n = await network(), d = await readApp.readV4Day(c, config, n, day, miner)
     assert.equal(miningPhase(d, n.timestamp), 'review')
-    await at((await c.getBlock()).timestamp + 3600n) // 1-hour review
-    await action({ kind: 'activateDay', day })
+    await at((await c.getBlock()).timestamp + 3600n) // 1-hour review; the first claim opens the day, no keeper call
     return bundle
   }
 
@@ -125,8 +124,9 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
   assert.equal(await c.readContract({ ...mining, functionName: 'inviteCount', args: [inviter] }), 1n) // 100+ followers and engagement: counts
   await t.test('claim receipt and balance agree; repeated claim never reports success', async () => {
     let n = await network(), d = await readApp.readV4Day(c, config, n, 0n, miner)
-    assert.equal(miningPhase(d, n.timestamp), 'claimable'); assert.equal(d.amount, first.amounts[0])
-    assert.deepEqual(await readApp.claimableDays(c, config, n, miner), [0n])
+    assert.equal(miningPhase(d, n.timestamp), 'activate'); assert.equal(d.amount, first.amounts[0])
+    assert.deepEqual(await readApp.claimableDays(c, config, n, miner), []) // claimMany needs opened days
+    assert.deepEqual(await readApp.claimableDays(c, config, n, miner, true), [0n]) // the session transaction opens them
     const r = await action({ kind: 'claim', day: 0n })
     assert.ok(r.pending.some(x => x?.hash)); assert.equal(r.pending.at(-1), null)
     n = await network(); d = await readApp.readV4Day(c, config, n, 0n, miner)
@@ -148,6 +148,7 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
   // The next cohort's session opens at 00:00 UTC while day 40 still waits for its report; claiming comes later.
   await startSession(40n); await startSession(41n); await publish(40n)
   await t.test('earlier rewards are claimed together while a later session is open', async () => {
+    await send(mining, 'activateDay', [40n]) // a node or keeper may still open a day; claimMany then takes it
     const n = await network()
     assert.deepEqual(await readApp.claimableDays(c, config, n, miner), [40n])
     await action({ kind: 'claimMany', days: [40n] })
@@ -173,7 +174,10 @@ test('miniapp V4 reads and wallet actions integrate with actual contracts', asyn
   assert.ok((await network()).totalSupply < beforeBurn)
   await t.test('fixed staking epochs can finalize and pay a real reward', async () => {
     await at(launch + 61n * DAY)
-    await action({ kind: 'finalizeEpoch', epoch: 0n }); await action({ kind: 'finalizeEpoch', epoch: 1n })
+    // Epoch 0 closed itself when a day's surplus was funded; only the epochs still due need a call.
+    const next = (await readApp.readV4Stake(c, config, await network(), 1n, miner)).nextEpoch
+    assert.ok(next >= 1n)
+    for (let epoch = next; epoch <= 1n; epoch++) await action({ kind: 'finalizeEpoch', epoch })
     const n = await network(), s = await readApp.readV4Stake(c, config, n, 1n, miner)
     assert.ok(s.claimable > 0n)
     await action({ kind: 'claimStake', epoch: 1n })

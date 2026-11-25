@@ -268,11 +268,15 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     await send(mining, 'publishAllocations', [0n, [r.entries[0]], [r.proofs[0]]])
     await at(await now() + 2n * DAY)
     await denied(mining, 'activateDay', [0n], admin, 'InvalidPhase')
+    await denied(mining, 'claim', [0n], alice, 'InvalidPhase') // a claim cannot open a day that is not ready either
     await send(mining, 'publishAllocations', [0n, [r.entries[1]], [r.proofs[1]]])
-    await send(mining, 'activateDay', [0n])
+    // No keeper: the first claim of a ready day opens its claim window and pays out its surplus.
+    assert.equal((await read(mining, 'dayInfo', [0n])).claimEnd, 0n)
     const before = await read(token, 'balanceOf', [alice])
     await send(mining, 'claim', [0n], alice)
     assert.equal(await read(token, 'balanceOf', [alice]), before + r.amounts[0])
+    assert.ok((await read(mining, 'dayInfo', [0n])).claimEnd > 0n)
+    await denied(mining, 'activateDay', [0n], admin, 'InvalidPhase')
     await denied(mining, 'claim', [0n], alice, 'InvalidPhase')
     await denied(mining, 'claim', [0n], outsider, 'InvalidPhase')
     assert.equal(await read(mining, 'claimedByMonth', [203001n, alice]), r.amounts[0])
@@ -580,11 +584,15 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     await at(launch + 31n * DAY)
     await send(token, 'approve', [staking.address, 100n * unit], bob)
     await send(staking, 'stake', [100n * unit], bob)
+    // No keeper: bob's stake closed the due epoch 0 itself; a manual call after that is refused.
+    assert.equal(await read(staking, 'nextEpochToFinalize'), 1n)
+    assert.equal((await read(staking, 'epochs', [0n]))[6], true)
+    await denied(staking, 'finalizeEpoch', [0n], admin, 'InvalidPhase')
     await send(staking, 'snapshotEpoch', [1n])
     const e = await read(staking, 'epochs', [1n])
     assert.equal(BigInt(e[0]), launch + 30n * DAY - 1n); assert.equal(e[2], 100n * unit)
     await at(launch + 61n * DAY)
-    await send(staking, 'finalizeEpoch', [0n]); await send(staking, 'finalizeEpoch', [1n])
+    await send(staking, 'finalizeEpoch', [1n])
     const rewards = (await read(staking, 'epochs', [1n]))[3]
     const before = await read(token, 'balanceOf', [alice])
     await send(staking, 'claim', [1n], alice)
@@ -643,21 +651,34 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
     assert.equal(await read(token, 'totalSupply'), before); assert.equal(await read(dao, 'reserved'), 0n)
   })
 
+  await scenario('no keeper: opening a month closes the mining ledger and settles the previous round', async () => {
+    await initialClaims()
+    const r = await report(31n); await activate(r); await send(mining, 'claim', [31n], alice); await send(mining, 'claim', [31n], bob)
+    const feb = 1896134400n, march = 1898553600n
+    await at(feb + 16n * DAY); await send(dao, 'openMonthlyVote', [], outsider) // closes January's ledger itself
+    assert.equal(await read(mining, 'monthFinalized', [203001n]), true)
+    const supply = await read(token, 'totalSupply')
+    await at(march + 16n * DAY); await send(dao, 'openMonthlyVote', [], outsider) // February's round was never settled
+    assert.equal(await read(mining, 'monthFinalized', [203002n]), true)
+    assert.equal((await read(dao, 'rounds', [203002n]))[4], true)
+    assert.equal(await read(token, 'totalSupply'), supply) // no votes: nothing burned
+    assert.equal(await read(dao, 'reserved'), (await read(dao, 'rounds', [203003n]))[8]) // only March's budget stays reserved
+  })
+
   await scenario('odd-month airdrop pays prior-month miners who kept a third of their mining staked', async () => {
     await send(token, 'approve', [staking.address, 100n * unit]); await send(staking, 'stake', [100n * unit])
     const day = 31n, r = await report(day), [minedA, minedB] = r.amounts
     await activate(r); await send(mining, 'claim', [day], alice); await send(mining, 'claim', [day], bob)
     await send(token, 'approve', [staking.address, minedA / 3n + 1n], alice); await send(staking, 'stake', [minedA / 3n + 1n], alice)
     const march = 1898553600n
-    await at(march + 16n * DAY)
-    await send(mining, 'finalizeMonth', [march])
     // Audit LOW-2: stake is read at the end of the 16th, not when someone opens the round. Bob stakes a day late.
     await at(march + 17n * DAY); await send(token, 'approve', [staking.address, minedB], bob); await send(staking, 'stake', [minedB], bob)
     await at(march + 18n * DAY); await send(dao, 'openMonthlyVote')
     await send(dao, 'vote', [203003n, true])
     const round = await read(dao, 'rounds', [203003n])
     assert.equal(round[6], 203002n); assert.equal(round[7], minedA + minedB)
-    await at(round[1] + 3n * DAY); await send(dao, 'settle', [203003n])
+    await at(round[1] + 3n * DAY) // nobody calls settle: alice's claim settles the passed round
+    assert.equal((await read(dao, 'rounds', [203003n]))[4], false)
     const before = await read(token, 'balanceOf', [alice]), share = round[8] * minedA / round[7]
     await denied(dao, 'claimAirdrop', [203003n], bob, 'NotEligible') // staked, but only after the 16th ended
     await denied(dao, 'claimAirdrop', [203003n], carol, 'NothingToClaim')
