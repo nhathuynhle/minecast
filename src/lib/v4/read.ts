@@ -105,13 +105,13 @@ export async function readV4Dao(client: PublicClient, config: V4Config, network:
     client.readContract({ address: config.dao, abi: daoAbi, functionName: "collected", args: [month, who], blockNumber }),
     client.readContract({ address: config.distributor, abi: distributorAbi, functionName: "monthFinalized", args: [previous], blockNumber }),
   ])
-  const openedAt = r[1] > 0n ? r[1] - 7n * DAY : 0n
   const [power, share, stakedAtOpen] = await Promise.all([
     r[1] > 0n && r[0] < network.timestamp ? client.readContract({ address: config.staking, abi: stakingAbi, functionName: "votingPowerAt", args: [who, r[0]], blockNumber }) : 0n,
     r[7] > 0n ? client.readContract({ address: r[5], abi: distributorAbi, functionName: "claimedByMonth", args: [r[6], who], blockNumber }) : 0n,
-    openedAt > 0n && openedAt < network.timestamp ? client.readContract({ address: config.staking, abi: stakingAbi, functionName: "stakeAtTime", args: [who, openedAt], blockNumber }) : 0n,
+    // The DAO reads stake at the round's fixed eligibility moment (end of the 16th), not when it opened.
+    r[12] > 0n && r[12] < network.timestamp ? client.readContract({ address: config.staking, abi: stakingAbi, functionName: "stakeAtTime", args: [who, r[12]], blockNumber }) : 0n,
   ])
-  // Airdrops require a third of the prior month's mining to be staked when the round opened.
+  // Airdrops require a third of the prior month's mining to be staked at the end of the 16th.
   const eligible = share > 0n && stakedAtOpen * 3n >= share
   const date = new Date(Number(network.timestamp) * 1000).getUTCDate()
   return { month, previous, snapshot: r[0], voteEnd: r[1], claimEnd: r[2], airdrop: r[1] > 0n ? r[3] : month % 2n === 1n,
