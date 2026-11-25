@@ -374,7 +374,10 @@ test('Open V4: real stake quorum, full allocation publication, staking and DAO',
   await scenario('keeper: opens claims others certified, closes the month, runs the DAO vote and epoch, ejects a silent key', async () => {
     const r = await report(); await certify(r) // certified and published, claims not opened yet
     await c.setBalance({ address: keys[1].address, value: parseEther('10') }) // any funded key keeps the protocol moving
-    const ctx = { client: c, account: keys[1], distributor: mining.address, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-keeper-')) }
+    // Public Base RPCs refuse eth_getLogs over 200 blocks: the keeper must never ask for more.
+    const limited = Object.assign(Object.create(c), { getContractEvents: args => {
+      assert.ok(args.toBlock - args.fromBlock < 200n, 'log range over 200 blocks'); return c.getContractEvents(args) } })
+    const ctx = { client: limited, account: keys[1], distributor: mining.address, dir: fs.mkdtempSync(path.join(os.tmpdir(), 'minecast-keeper-')) }
     assert.deepEqual(await keep(ctx, launch, await now()), []) // still under review: nothing is due
     await at(await now() + REVIEW)
     assert.deepEqual(await keep(ctx, launch, await now()), ['activateDay(0)'])

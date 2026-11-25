@@ -37,21 +37,29 @@ function month(now, back) {
   return { start: BigInt(start), id: BigInt(m.getUTCFullYear() * 100 + m.getUTCMonth() + 1) }
 }
 
-/** Every key ever activated, from Activated logs; the scan resumes where it stopped (bounded work per pass). */
-async function activatedKeys(client, registry, dir, launchTime, head) {
+// Public Base endpoints cap eth_getLogs at 200 blocks per call.
+const LOG_RANGE = 200n
+
+/** First block holding the registry's code: no key can have been activated before it. */
+async function deployBlock(client, address, head) {
+  let lo = 0n, hi = head
+  while (lo < hi) { const mid = (lo + hi) / 2n; if ((await client.getCode({ address, blockNumber: mid }))?.length > 2) hi = mid; else lo = mid + 1n }
+  return lo
+}
+
+/** Every key ever activated, from Activated logs; the scan starts at the registry's deployment and saves its
+ *  progress after every range, so an RPC failure costs one range, not the whole scan. */
+async function activatedKeys(client, registry, dir, head) {
   const file = path.join(dir, `keeper-${registry.toLowerCase()}.json`)
   const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
-  // Base makes a block every 2 s; a key activates at least 7 days after it registers, never long before launch.
-  const latest = await client.getBlock({ blockNumber: head })
-  const guess = head - (latest.timestamp - (launchTime > 8n * DAY ? launchTime - 8n * DAY : 0n)) / 2n
-  let from = state ? BigInt(state.from) : guess > 0n ? guess : 0n
+  let from = state ? BigInt(state.from) : await deployBlock(client, registry, head)
   const keys = new Set(state?.keys ?? [])
   for (let i = 0; i < 50 && from <= head; i++) {
-    const to = from + 1999n < head ? from + 1999n : head
+    const to = from + LOG_RANGE - 1n < head ? from + LOG_RANGE - 1n : head
     for (const log of await client.getContractEvents({ address: registry, abi, eventName: 'Activated', fromBlock: from, toBlock: to })) keys.add(log.args.signingKey)
     from = to + 1n
+    fs.writeFileSync(file, JSON.stringify({ from: String(from), keys: [...keys] }))
   }
-  fs.writeFileSync(file, JSON.stringify({ from: String(from), keys: [...keys] }))
   return [...keys]
 }
 
@@ -81,7 +89,7 @@ export async function keep({ client, account, distributor, dir }, launchTime, no
   await attempt(staking, 'finalizeEpoch', [await read(staking, 'nextEpochToFinalize')])
   const epoch = await read(staking, 'currentEpoch')
   for (const back of [5n, 4n]) if (epoch >= back) await attempt(staking, 'sweepUnclaimed', [epoch - back])
-  const keys = await activatedKeys(client, registry, dir, launchTime, await client.getBlockNumber())
+  const keys = await activatedKeys(client, registry, dir, await client.getBlockNumber())
   for (const key of keys) await attempt(registry, 'ejectInactive', [key])
   // A day still without quorum a day after its close: if the report this node signed carries over half of the
   // bond, every key off it is behind. Days go in order, since only consecutive days build an ejection.
