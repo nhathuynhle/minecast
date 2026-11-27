@@ -50,7 +50,9 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const [tab, setTab] = useState("mine")
   const [guide, setGuide] = useState<GuideSection | "top" | null>(null)
   const [identity, setIdentity] = useState<FarcasterIdentity | null>(null)
-  const [account, setAccount] = useState<Address | undefined>(() => { const a = load<string>(`${scope}:account`); return a && isAddress(a) ? getAddress(a) : undefined })
+  // The connected wallet is kept per chain, not per deployment, so a redeploy does not silently disconnect it.
+  const accountKey = `minecast:v4:${config.chainId}:account`
+  const [account, setAccount] = useState<Address | undefined>(() => { const a = load<string>(accountKey) ?? load<string>(`${scope}:account`); return a && isAddress(a) ? getAddress(a) : undefined })
   const [provider, setProvider] = useState<EthereumProvider | null>(null)
   const [network, setNetwork] = useState<V4Network | null>(null)
   const [dayData, setDayData] = useState<MiningDay | null>(null)
@@ -97,7 +99,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
   useEffect(() => { sessionsRef.current = []; setSessions([]) }, [identity?.fid])
   useEffect(() => { const id = window.setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id) }, [])
   useEffect(() => {
-    save(`${scope}:account`, account ?? null)
+    save(accountKey, account ?? null)
     const stored = load<PendingV4Tx>(pendingKey)
     const valid = stored && /^0x[0-9a-f]{64}$/i.test(stored.hash) && typeof stored.account === "string" && stored.account.toLowerCase() === account?.toLowerCase()
       && isAddress(stored.to) && /^0x[0-9a-f]*$/i.test(stored.data) && typeof stored.label === "string"
@@ -165,6 +167,13 @@ function ConnectedV4({ config }: { config: V4Config }) {
   const deadline = dayData && phase ? phaseDeadline(dayData, phase, session) : 0n
   const fresh = updated > 0 && clock - updated < 45000 && !error
   const locked = busy || Boolean(pending) || !fresh || !account
+  // Say why "Post cast" is off; identity, eligibility and a moved distributor already show their own message.
+  const postBlocker = !identity || !eligible || network?.moved || busy ? ""
+    : !account ? "Connect your Farcaster wallet to start."
+    : pending ? "A transaction is still waiting above: finish or check it first."
+    : !fresh ? "Data is out of date. Tap Retry above, or close and reopen MineCast."
+    : castLink ? "A cast is waiting below: verify it, or clear the box to post a new one."
+    : !/[\p{L}\p{N}]/u.test(castText) ? "Write a few words first." : ""
   const remember = (value: PendingV4Tx | null) => { save(pendingKey, value); if (accountRef.current === account) setPending(value) }
   const updateTransaction = (value: TxProgress) => { if (accountRef.current === account) setTx(value) }
 
@@ -301,6 +310,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
           <label className="sr-only" htmlFor="v4-cast">Suggested cast</label><textarea id="v4-cast" value={castText} maxLength={1024} onChange={e => setCastText(e.target.value)} rows={3} placeholder="Write today's cast in your own words" />
           {network.moved && <p className="v4-muted">Stake governance moved mining to a new contract ({network.currentDistributor}). This app version still settles earlier days; update the app to keep mining.</p>}
           <Button disabled={locked || !identity || !eligible || !!castLink || network.moved || !/[\p{L}\p{N}]/u.test(castText)} onClick={() => void postCast(false)}><Send size={17} />Post cast & start today's session</Button>
+          {postBlocker && <p className="v4-muted">{postBlocker}</p>}
           <details open={!!castLink}><summary>Already posted? Verify your cast</summary><label>Cast link or hash<input value={castLink} onChange={e => { setCastLink(e.target.value); save(castKey, e.target.value) }} placeholder="https://farcaster.xyz/…" /></label>
             <Button disabled={locked || !identity || !castLink.trim() || network.moved} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
         </Card>
