@@ -4,6 +4,8 @@ Cập nhật 2026-11-09 (Asia/Saigon). **Code local và kiểm thử đã có; c
 
 Hai quyết định của chủ dự án được áp dụng: xác nhận bằng chữ ký **hơn 2/3 tổng cọc node**, chấp nhận quorum khai sai dữ liệu xã hội; **tổng cọc tối thiểu 1 triệu TOKENCAST**, cho phép một node dev bootstrap. Bản này thay yêu cầu Nitro/ZK/source proof của các tài liệu nghiên cứu trước, không tuyên bố bảo mật tương đương Ethereum/Bitcoin.
 
+Token: tên ERC-20 **TOKENCAST**, ký hiệu **CAST**, áp dụng từ lần deploy mainnet (source đổi ngày 27/11/2026; ký hiệu cố định lúc deploy). Bản Base Sepolia đang chạy vẫn mang ký hiệu TOKENCAST, còn app đã hiển thị CAST. Vì source đã đổi, `verify-open-deployment` chạy với bản testnet hiện tại sẽ báo lệch runtime của Token và Registry. Các chỗ ghi "TOKENCAST" bên dưới là cùng một token.
+
 ## Bản 2 (2026-11-11): phi tập trung hoá và governance
 
 Áp dụng các quyết định ngày 2026-11-11 của chủ dự án; mục này có hiệu lực hơn mọi câu cũ mâu thuẫn bên dưới.

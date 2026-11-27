@@ -49,7 +49,7 @@ contract TokenCastOpenV4 is ERC20, ERC20Burnable {
     event BoostBought(address indexed account, uint256 level, uint256 burned);
 
     /// @dev Launch at 00:00 UTC so mining days, and therefore distributor switches, align with UTC months.
-    constructor(address devWallet_, address bootstrapAdmin_, uint64 launchTime_) ERC20("TokenCast", "TOKENCAST") {
+    constructor(address devWallet_, address bootstrapAdmin_, uint64 launchTime_) ERC20("TOKENCAST", "CAST") {
         if (devWallet_ == address(0) || bootstrapAdmin_ == address(0)
             || launchTime_ <= block.timestamp || launchTime_ % 1 days != 0) revert InvalidConfiguration();
         devWallet = devWallet_;
@@ -113,7 +113,7 @@ contract TokenCastOpenV4 is ERC20, ERC20Burnable {
         emit Issued(day, recipient, amount, newTotal);
     }
 
-    /// @notice Burn 1 million TOKENCAST to raise the caller's permanent boost by one level.
+    /// @notice Burn 1 million CAST to raise the caller's permanent boost by one level.
     ///         Level L opens once the fixed calendar has released L × 10% of the mining budget.
     ///         Lives in the token so every present and future distributor reads the same level.
     function buyBoostLevel() external {

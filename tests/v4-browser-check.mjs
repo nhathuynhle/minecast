@@ -43,7 +43,7 @@ export async function checkBrowser(config, rpc, miner, t) {
   await page.getByRole('heading',{name:'Mining session',exact:true}).waitFor()
   await page.getByText('My mining days',{exact:true}).click()
   await page.getByRole('textbox',{name:'Mining day',exact:true}).fill('40')
-  await page.getByText(/TOKENCAST claimed onchain/).waitFor()
+  await page.getByText(/CAST claimed onchain/).waitFor()
   const stats = page.getByTestId('live-mining-stats')
   await stats.getByText('200',{exact:true}).waitFor()
   cohortCount = 210
@@ -52,7 +52,7 @@ export async function checkBrowser(config, rpc, miner, t) {
   statsUnavailable = true
   await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
   await stats.getByText(/Last known/).waitFor()
-  assert.equal(await page.getByText(/TOKENCAST claimed onchain/).count(),1,'stats outage must not erase onchain claim state')
+  assert.equal(await page.getByText(/CAST claimed onchain/).count(),1,'stats outage must not erase onchain claim state')
   statsUnavailable = false
   await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
   await stats.getByText(/Updated/).waitFor()

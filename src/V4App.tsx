@@ -222,7 +222,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
   async function shareInvite() {
     if (!account) return
     const link = `${window.location.origin}/?ref=${account}`
-    const shared = await composeOnFarcaster("Mining $TOKENCAST on MineCast. Start from this cast and your first session counts as my invite.", link)
+    const shared = await composeOnFarcaster("Mining $CAST on MineCast. Start from this cast and your first session counts as my invite.", link)
     if (shared.status === "posted") return setInviteNote("Invite posted")
     if (shared.status !== "unavailable") return
     try { await navigator.clipboard.writeText(link); setInviteNote("Invite link copied") } catch { setInviteNote(link) }
@@ -287,13 +287,13 @@ function ConnectedV4({ config }: { config: V4Config }) {
           {timestamp < network.launch ? <div className="v4-countdown"><FarcasterIcon /><strong>{countdown(network.launch, timestamp)}</strong><span>Until launch</span></div>
             : <div className="v4-countdown"><FarcasterIcon /><strong>{deadline ? countdown(deadline, timestamp) : phase === "claimed" ? "Claimed" : !session && !dayData?.certifiedAt ? countdown(network.launch + (network.day + 1n) * DAY, timestamp) : "—"}</strong><span>{!session && !dayData?.certifiedAt ? "Until today's cohort closes" : phase ? labels[phase] : "Choose a mining day"}</span></div>}
           {session && account && session.wallet_address.toLowerCase() !== account.toLowerCase() && <p className="v4-muted">This session pays {short(session.wallet_address)}. Connect that wallet to claim its reward.</p>}
-          {phase === "claimable" && dayData && <><div className="v4-reward">{tokens(dayData.amount)} <small>TOKENCAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button><p className="v4-muted">Claim by {date(dayData.claimEnd)}</p></>}
+          {phase === "claimable" && dayData && <><div className="v4-reward">{tokens(dayData.amount)} <small>CAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button><p className="v4-muted">Claim by {date(dayData.claimEnd)}</p></>}
           {ready.some(day => day !== dayData?.day) && <><p className="v4-muted">Earlier rewards ready: day {ready.join(", ")}</p>
             <Button secondary disabled={locked} onClick={() => void transact({ kind: "claimMany", days: ready })}><ArrowDownToLine size={18} />Claim earlier rewards</Button></>}
           {phase === "unconfirmed" && session && <><p className="v4-muted">Your cast is recorded, but nodes only count a session opened onchain. Open it within 30 minutes of posting.</p><Button disabled={locked || busy} onClick={() => void postCast(true, session.cast_hash)}>Start session onchain</Button></>}
-          {phase === "claimed" && dayData && <p className="v4-success">{tokens(dayData.amount)} TOKENCAST claimed onchain.</p>}
+          {phase === "claimed" && dayData && <p className="v4-success">{tokens(dayData.amount)} CAST claimed onchain.</p>}
           {phase === "activate" && dayData && (dayData.amount > 0n // the first claim opens the day's claim window
-            ? <><div className="v4-reward">{tokens(dayData.amount)} <small>TOKENCAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button></>
+            ? <><div className="v4-reward">{tokens(dayData.amount)} <small>CAST</small></div><Button disabled={locked} onClick={() => void transact({ kind: "claim", day: dayData.day })}><ArrowDownToLine size={18} />Claim reward</Button></>
             : <p className="v4-muted">No allocation for this wallet.</p>)}
           {phase === "publishing" && dayData && <p className="v4-muted">{String(dayData.published)} / {String(dayData.leafCount)} allocations published.</p>}
           {dayData && !dayData.certifiedAt && session && ["mining", "waiting"].includes(phase ?? "") && <div className="v4-estimate" aria-live="polite">
@@ -333,19 +333,19 @@ function ConnectedV4({ config }: { config: V4Config }) {
         <Card title="Rewards" help={() => setGuide("rewards")}><dl className="v4-stats"><Stat label="Followers">×1 to ×10</Stat><Stat label="Likes and recasts">×0 to ×10</Stat><Stat label="Node">×3</Stat><Stat label="Invites">Up to ×2</Stat><Stat label="Burn boost">Up to ×200 total</Stat><Stat label="Wallet cap">1% of the pool</Stat><Stat label="Unshared pool">95% DAO, 5% stakers</Stat></dl></Card>
       </>}
       {tab === "token" && <>
-        <Card title="TOKENCAST" help={() => setGuide("token")}><div className="v4-reward">{account ? tokens(network.balance) : "—"} <small>in your wallet</small></div>
+        <Card title="TOKENCAST ($CAST)" help={() => setGuide("token")}><div className="v4-reward">{account ? tokens(network.balance) : "—"} <small>in your wallet</small></div>
           <dl className="v4-stats"><Stat label="Total supply">{tokens(network.totalSupply, 0)}</Stat><Stat label="Lifetime minted">{tokens(network.cumulativeMinted, 0)}</Stat><Stat label="Lifetime maximum">21,000,000,000</Stat><Stat label="Dev premine">2,100,000</Stat></dl>
           <a href={`${explorer}/token/${config.token}${account ? `?a=${account}` : ""}`} target="_blank" rel="noreferrer">View token on explorer <ExternalLink size={14} /></a></Card>
         <Card title="V4 contracts"><div className="v4-addresses">{(["token", "distributor", "staking", "dao", "registry"] as const).map(key => <a key={key} href={`${explorer}/address/${config[key]}`} target="_blank" rel="noreferrer"><span>{key}</span><code>{short(config[key])}</code><ExternalLink size={14} /></a>)}</div><p className="v4-muted">{chain.name}, block {String(network.blockNumber)}</p></Card>
       </>}
       {tab === "dao" && <>
         <Card title="Stake" help={() => setGuide("staking")}><dl className="v4-stats"><Stat label="Total staked">{tokens(network.totalStaked)}</Stat><Stat label="Your stake">{tokens(stake?.balance ?? 0n)}</Stat><Stat label="Your voting power">{tokens(stake?.votingPower ?? 0n)}</Stat><Stat label="Staking reward pool">{tokens(network.rewardLiability)}</Stat></dl>
-          <label>Amount (TOKENCAST)<input inputMode="decimal" placeholder="0.00" value={stakeAmount} onChange={e => setStakeAmount(e.target.value)} /></label>
+          <label>Amount (CAST)<input inputMode="decimal" placeholder="0.00" value={stakeAmount} onChange={e => setStakeAmount(e.target.value)} /></label>
           <div className="v4-actions"><Button disabled={locked || !stakeAmount} onClick={() => void amountAction("stake")}>Stake</Button><Button disabled={locked || !stakeAmount || !stake || timestamp < stake.lockedUntil} secondary onClick={() => void amountAction("withdraw")}>Withdraw</Button></div>
           <p className="v4-muted">Each top-up locks your whole stake for 30 days. Staked tokens vote once they are 30 days old.</p>
           {stake && stake.balance > 0n && <p className="v4-muted">{timestamp < stake.lockedUntil ? `Locked until ${date(stake.lockedUntil)}` : "Your stake is unlocked."}</p>}
           <details><summary>Staking rewards</summary><label>Reward epoch<input inputMode="numeric" value={epochInput} placeholder={String(stake?.epoch ?? 0)} onChange={e => setEpochInput(e.target.value)} /></label>
-            <p>Available: {tokens(stake?.claimable ?? 0n)} TOKENCAST</p><Button disabled={locked || !stake || stake.claimable === 0n} onClick={() => stake && void transact({ kind: "claimStake", epoch: stake.epoch })}>Claim staking reward</Button>
+            <p>Available: {tokens(stake?.claimable ?? 0n)} CAST</p><Button disabled={locked || !stake || stake.claimable === 0n} onClick={() => stake && void transact({ kind: "claimStake", epoch: stake.epoch })}>Claim staking reward</Button>
             {stake && <Button secondary disabled={locked || timestamp < network.launch + (stake.nextEpoch + 1n) * 30n * DAY} onClick={() => void transact({ kind: "finalizeEpoch", epoch: stake.nextEpoch })}>Prepare epoch {String(stake.nextEpoch)} rewards</Button>}
             {stake?.canSweep && <Button secondary disabled={locked} onClick={() => void transact({ kind: "sweepEpoch", epoch: stake.epoch })}>Roll expired rewards forward</Button>}
             <Button secondary disabled={locked} onClick={() => void transact({ kind: "revokeApproval" })}>Remove staking approval</Button></details>
@@ -379,7 +379,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
             return <div key={String(p.id)} className="v4-proposal">
               <div className="v4-row"><h3>{p.description.split("\n")[0].slice(0, 120)}</h3><span className="mc-era">{p.state}</span></div>
               <ul className="v4-muted">{p.actions.map((a, i) => <li key={i}>{a.kind === "call" ? `Contract call ${a.label} on ${short(a.target)}`
-                : `Pay ${tokens(a.amount, 0)} TOKENCAST to ${short(a.to)}${a.kind === "spendLarge" ? " (above the 5% cap)" : ""}`}</li>)}</ul>
+                : `Pay ${tokens(a.amount, 0)} CAST to ${short(a.to)}${a.kind === "spendLarge" ? " (above the 5% cap)" : ""}`}</li>)}</ul>
               <dl className="v4-stats"><Stat label="For">{tokens(p.forVotes, 0)}</Stat><Stat label="Against">{tokens(p.againstVotes, 0)}</Stat>
                 <Stat label="Quorum (for + abstain)">{p.state === "Pending" ? "—" : tokens(p.quorum, 0)}</Stat><Stat label="To pass">{p.supermajority ? "Two thirds" : "Majority"}</Stat></dl>
               {when && <p className="v4-muted">{when}</p>}
@@ -396,7 +396,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
         </Card>}
         {gov && <Card title="New treasury proposal">
           <label>Recipient<input value={proposalTo} placeholder="0x…" onChange={e => setProposalTo(e.target.value)} /></label>
-          <label>Amount (TOKENCAST)<input inputMode="decimal" placeholder="0" value={proposalAmount} onChange={e => setProposalAmount(e.target.value)} /></label>
+          <label>Amount (CAST)<input inputMode="decimal" placeholder="0" value={proposalAmount} onChange={e => setProposalAmount(e.target.value)} /></label>
           <label>Description<textarea rows={4} maxLength={4000} value={proposalText} placeholder="What the money is for, who receives it and how results will be reported. The first line is the title." onChange={e => setProposalText(e.target.value)} /></label>
           {proposalWei !== null && proposalWei > 0n && <p className="v4-muted">{proposalWei > gov.treasury.unreserved ? "More than the unreserved treasury."
             : proposalLarge ? "Needs two thirds: above the 5% a majority may spend this period." : "A simple majority decides."}

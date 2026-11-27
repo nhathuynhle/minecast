@@ -23,7 +23,7 @@ export function V4Guide({ section, onClose }: { section: GuideSection | "top"; o
   return <article className="v4-card v4-guide">
     <button type="button" className="v4-back" onClick={onClose}><ArrowLeft size={17} />Back</button>
     <h2>MineCast whitepaper</h2>
-    <p className="v4-lede">Post on Farcaster once a day, get a share of that day's new TOKENCAST. Independent nodes check the work; stakers govern the rest.</p>
+    <p className="v4-lede">Post on Farcaster once a day, get a share of that day's new $CAST. Independent nodes check the work; stakers govern the rest.</p>
     <nav className="v4-chips" aria-label="Whitepaper sections">{CONTENTS.map(([id, label]) =>
       <button key={id} type="button" onClick={() => document.getElementById(`guide-${id}`)?.scrollIntoView({ block: "start" })}>{label}</button>)}</nav>
 
@@ -35,7 +35,7 @@ export function V4Guide({ section, onClose }: { section: GuideSection | "top"; o
     </Part>
 
     <Part id="rewards" title="Rewards">
-      <p>Each day has a fixed pool of new TOKENCAST that shrinks by 0.5% a day. Your share is your weight divided by the total weight of everyone who mined that day.</p>
+      <p>Each day has a fixed pool of new CAST that shrinks by 0.5% a day. Your share is your weight divided by the total weight of everyone who mined that day.</p>
       <p>Your base weight is your follower multiplier times your engagement multiplier. A cast nobody liked or recast earns nothing, however many followers you have.</p>
       <dl className="v4-tiers"><dt>Followers</dt><dd>Multiplier</dd>{TIERS.map(([followers, weight]) => <div key={followers}><dt>{followers}</dt><dd>{weight}</dd></div>)}</dl>
       <dl className="v4-tiers"><dt>Likes and recasts</dt><dd>Multiplier</dd>{ENGAGEMENT.map(([count, weight]) => <div key={count}><dt>{count}</dt><dd>{weight}</dd></div>)}</dl>
@@ -69,12 +69,12 @@ export function V4Guide({ section, onClose }: { section: GuideSection | "top"; o
     </Part>
 
     <Part id="boost" title="Burn boost">
-      <p>Each level burns 1,000,000 TOKENCAST forever and adds 20% to your weight and to your daily cap. There are 9 levels; level L unlocks once L × 10% of all mining has been released.</p>
+      <p>Each level burns 1,000,000 CAST forever and adds 20% to your weight and to your daily cap. There are 9 levels; level L unlocks once L × 10% of all mining has been released.</p>
       <p>A level applies to sessions opened after the burn and stays with your wallet.</p>
     </Part>
 
     <Part id="network" title="Validators">
-      <p>Nodes bond at least 1,000,000 TOKENCAST and sign each day's report. A report needs signatures from more than two thirds of all bonded stake; offline stake still counts against it. A node's voting power is its bond, so more power always puts more tokens at risk.</p>
+      <p>Nodes bond at least 1,000,000 CAST and sign each day's report. A report needs signatures from more than two thirds of all bonded stake; offline stake still counts against it. A node's voting power is its bond, so more power always puts more tokens at risk.</p>
       <p>New nodes wait 7 days before they count. A node that stays silent for more than two weeks can be removed, and its bond returns after 30 days. If over half of the bond agrees on a report but cannot reach two thirds, any node off that report for 3 days in a row is removed the same way, so blocking the network takes more bond than the majority. Signing two different reports for one day burns the bond.</p>
       <p>While one operator holds more than two thirds of the bond, that operator alone decides each day's report, within the caps. Anyone can check a certified day against Farcaster with <code>research/v4/node/check-day.mjs</code>.</p>
       <h4>Run a node</h4>
@@ -93,7 +93,7 @@ export function V4Guide({ section, onClose }: { section: GuideSection | "top"; o
     </Part>
 
     <Part id="staking" title="Staking">
-      <p>Staked TOKENCAST is locked for 30 days, and every top-up locks the whole stake again. Staked tokens become voting power by themselves once they are 30 days old; a top-up never removes power you already have, and withdrawing removes it at once. Changing your delegate needs an unlocked stake, locks it again for 30 days, and the new voter gains the power after those 30 days.</p>
+      <p>Staked CAST is locked for 30 days, and every top-up locks the whole stake again. Staked tokens become voting power by themselves once they are 30 days old; a top-up never removes power you already have, and withdrawing removes it at once. Changing your delegate needs an unlocked stake, locks it again for 30 days, and the new voter gains the power after those 30 days.</p>
       <p>Stakers share 5% of each day's unshared pool, paid per 30-day epoch to stake held through the whole epoch. Each epoch's rewards can be claimed for 90 days.</p>
     </Part>
 
@@ -104,11 +104,11 @@ export function V4Guide({ section, onClose }: { section: GuideSection | "top"; o
 
     <Part id="treasury" title="Treasury">
       <p>No one holds a key to the treasury. Stakers vote on every spend. A simple majority may spend up to 5% of the unreserved balance, a credit that refills over 30 days. Anything larger needs two thirds and draws on a credit of 20% that refills over 90 days, so no vote can empty the treasury at once. A spend not executed within two weeks of the earliest moment it could run expires.</p>
-      <p>Every passed proposal waits 14 days in a timelock before anyone can execute it. Proposing needs 1,000,000 TOKENCAST of voting power or an active node, and one live proposal per wallet.</p>
+      <p>Every passed proposal waits 14 days in a timelock before anyone can execute it. Proposing needs 1,000,000 CAST of voting power or an active node, and one live proposal per wallet.</p>
     </Part>
 
     <Part id="token" title="Token">
-      <p>TOKENCAST has a lifetime maximum of 21,000,000,000 and a developer premine of 2,100,000. Burns lower the supply and never restore the mint limit.</p>
+      <p>TOKENCAST (ticker $CAST) has a lifetime maximum of 21,000,000,000 and a developer premine of 2,100,000. Burns lower the supply and never restore the mint limit.</p>
     </Part>
   </article>
 }

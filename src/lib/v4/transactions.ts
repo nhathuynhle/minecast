@@ -72,7 +72,7 @@ export function friendlyV4Error(error: unknown): string {
   if (/InvalidPhase|InvalidRound|InvalidVote|NothingToClaim|AlreadyClaimed/i.test(message)) return "The onchain state changed or this action is not available yet. Refresh and try again."
   if (/InvalidSession/.test(message)) return "This wallet already mined today, or the cast was used for an earlier day. Post a new cast for today."
   if (/Locked/i.test(message)) return "Your stake has not completed its 30-day lock."
-  if (/GovernorInsufficientProposerVotes|GovernorRestrictedProposer/.test(message)) return "Proposing needs 1,000,000 TOKENCAST of active voting power, or an active node you operate."
+  if (/GovernorInsufficientProposerVotes|GovernorRestrictedProposer/.test(message)) return "Proposing needs 1,000,000 CAST of active voting power, or an active node you operate."
   if (/ProposerHasLiveProposal/.test(message)) return "You already have a proposal that is pending or being voted on."
   if (/GovernorAlreadyCastVote/.test(message)) return "This wallet has already voted on that proposal."
   if (/GovernorUnexpectedProposalState|GovernorNonexistentProposal/.test(message)) return "The proposal is not in the right state for that action. Refresh and try again."

@@ -10,7 +10,7 @@
     "iconUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
     "homeUrl": "https://minecast-beta.vercel.app",
     "imageUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
-    "buttonTitle": "Mine $TOKENCAST",
+    "buttonTitle": "Mine $CAST",
     "splashImageUrl": "https://minecast-beta.vercel.app/tokencast-logo.png",
     "splashBackgroundColor": "#0b0f17",
     "requiredCapabilities": [

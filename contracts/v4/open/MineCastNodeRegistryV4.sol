@@ -68,7 +68,7 @@ contract MineCastNodeRegistryV4 is ReentrancyGuard {
         token = token_;
     }
 
-    /// @notice Deposit actual TOKENCAST. A retired signing key can never be reused.
+    /// @notice Deposit actual CAST. A retired signing key can never be reused.
     function registerNode(address signingKey, uint256 amount) external nonReentrant {
         if (signingKey == address(0) || signingKey.code.length != 0 || nodes[signingKey].operator != address(0)
             || amount < MIN_NODE_BOND || amount > type(uint208).max) revert InvalidNode();

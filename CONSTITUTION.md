@@ -6,9 +6,9 @@ MineCast is run by its stakers. No person, company or key, including the founder
 
 These are fixed in `TokenCastOpenV4` and can never be changed by anyone, including a successful vote:
 
-- Maximum supply: 21,000,000,000 TOKENCAST. Developer premine: 2,100,000.
+- Token: TOKENCAST, ticker $CAST. Maximum supply: 21,000,000,000 CAST. Developer premine: 2,100,000.
 - Mining emission: 0.5% of the remaining mining budget per day, with lifetime and per-day caps.
-- Burn boost: levels 1–9. Each level costs 1,000,000 TOKENCAST (burned) and unlocks once L × 10% of the mining budget has been released. Each level adds +0.2 to weight and to the per-wallet daily cap. Burn is the only boost that goes past the ×100 base cap, up to a hard ×200 ceiling.
+- Burn boost: levels 1–9. Each level costs 1,000,000 CAST (burned) and unlocks once L × 10% of the mining budget has been released. Each level adds +0.2 to weight and to the per-wallet daily cap. Burn is the only boost that goes past the ×100 base cap, up to a hard ×200 ceiling.
 - Invite boost: a wallet may name its inviter once, when it opens a session itself. An invite counts once per invitee Farcaster account, at its first rewarded day with at least 100 followers. Each counted invite adds +0.1 to the inviter's weight for sessions opened afterwards, up to 10 invites (×2), inside the ×100 base cap.
 - Balances. No contract can move tokens out of a wallet or out of a staker's principal.
 - There is no pause, no blacklist and no admin key. The deployment key loses all powers when `finalizeDistributor` runs.
@@ -51,7 +51,7 @@ A rule change should start on the first day of a month at least 4 weeks after su
 
 ## 5. Nodes
 
-- Anyone can run a node by bonding at least 1,000,000 TOKENCAST. Activation is possible 7 days after registration, and the node counts from the following day.
+- Anyone can run a node by bonding at least 1,000,000 CAST. Activation is possible 7 days after registration, and the node counts from the following day.
 - A report becomes final when keys holding more than two thirds of active bond sign the same report, and keys holding more than one third of active bond had committed to exactly that report on their own in the first phase. Commitments carry a secret salt and are revealed when the second phase starts; the first phase lasts at least 30 minutes after the 00:00 UTC close and stays open until someone reveals or signs. Co-signing alone can never finalize a report. The one exception is a key that alone holds more than two thirds of active bond: nobody can outvote it, so it may finalize without a first-phase commitment, and a lone node that misses the commit phase does not lose the day. Whoever holds that much bond decides each daily report alone: who is paid from that day's emission and how much, within the daily and per-wallet caps. It cannot mint beyond the caps, move anyone's tokens or change these rules, but the tokens it directs can be staked and voted. While one operator holds that share, MineCast depends on trusting that operator; anyone can check each certified day against Farcaster with `research/v4/node/check-day.mjs`, and the network becomes trustless only once no key holds more than a third of the bond.
 - Each report window has two phases. A day's cohort closes at 00:00 UTC. For the first 30 minutes after the close, nodes may only commit to a hash of the report they built themselves. Afterwards they reveal it with `announceReport` and co-sign the earliest announcement that matches their own data within one follower tier.
 - The node bonus (×3 for the operator's own mining) is earned only by a key whose own commitment matched the certified report, so copying other nodes earns nothing. It is judged on facts fixed at the day's cutoff, so later evidence cannot void a certified day.

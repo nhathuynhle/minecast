@@ -44,7 +44,7 @@ export function prepareDeployment(config, contracts, currentTime = Math.floor(Da
       'Verify chain ID, pending nonce and block time against your RPC before signing.',
       'Estimate gas after each dependency deployment; do not blindly send this file.',
       'Review code and bindings before finalization; token() alone is not a safety proof. Afterwards only the 14-day governance timelock can change future-month distributors or spend the treasury.',
-      'Dev then approves and registers at least 1M TOKENCAST to a separate validator signing key; wait 7 days and activate before launch.',
+      'Dev then approves and registers at least 1M CAST to a separate validator signing key; wait 7 days and activate before launch.',
       'No DEX liquidity, node process, UI migration or mainnet approval is created by this plan.'] }
 }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
