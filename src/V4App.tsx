@@ -161,6 +161,7 @@ function ConnectedV4({ config }: { config: V4Config }) {
 
   const timestamp = network ? network.timestamp + BigInt(updated ? Math.max(0, Math.floor((clock - updated) / 1000)) : 0) : 0n
   const session = sessions.find(s => BigInt(s.day) === dayData?.day)
+  const castToday = network ? sessions.find(s => BigInt(s.day) === network.day) : undefined
   const phase = dayData ? miningPhase(dayData, timestamp, session) : null
   const live = useLiveStats(config, tab === "mine" ? dayData?.day : undefined)
   const statsFresh = live.receivedAt > 0 && clock - live.receivedAt < 45000 && !live.unavailable
@@ -305,14 +306,17 @@ function ConnectedV4({ config }: { config: V4Config }) {
           <details><summary>My mining days</summary><label>Day number<input aria-label="Mining day" inputMode="numeric" value={dayInput} placeholder={String(dayData?.day ?? network.day)} onChange={e => setDayInput(e.target.value)} /></label>
             <div className="v4-chips">{sessions.slice(0, 12).map(s => <button key={s.id} type="button" onClick={() => setDayInput(String(s.day))}>Day {s.day}</button>)}</div></details>
         </Card>
-        <Card title="Cast to mine" help={() => setGuide("claims")}>{sessionMessage && sessionMessage !== "Ready to cast." && <p className="v4-muted">{sessionMessage}</p>}
+        <Card title="Cast to mine" help={() => setGuide("claims")}>{castToday
+          // One cast per UTC day: once today's is in, say so instead of offering a form that can only refuse.
+          ? <p className="v4-success">{castToday.day === Number(dayData?.day) && phase === "unconfirmed" ? "Today's cast is recorded. Open the session onchain in Mining session above." : `Today's cast is in (${new Date(castToday.started_at).toLocaleTimeString()}). The next one opens at 00:00 UTC.`}</p>
+          : <>{sessionMessage && sessionMessage !== "Ready to cast." && <p className="v4-muted">{sessionMessage}</p>}
           {sessionError && <p role="alert" className="v4-error">{sessionError}</p>}
           <label className="sr-only" htmlFor="v4-cast">Suggested cast</label><textarea id="v4-cast" value={castText} maxLength={1024} onChange={e => setCastText(e.target.value)} rows={3} placeholder="Write today's cast in your own words" />
           {network.moved && <p className="v4-muted">Stake governance moved mining to a new contract ({network.currentDistributor}). This app version still settles earlier days; update the app to keep mining.</p>}
           <Button disabled={locked || !identity || !eligible || !!castLink || network.moved || !/[\p{L}\p{N}]/u.test(castText)} onClick={() => void postCast(false)}><Send size={17} />Post cast & start today's session</Button>
           {postBlocker && <p className="v4-muted">{postBlocker}</p>}
           <details open={!!castLink}><summary>Already posted? Verify your cast</summary><label>Cast link or hash<input value={castLink} onChange={e => { setCastLink(e.target.value); save(castKey, e.target.value) }} placeholder="https://farcaster.xyz/…" /></label>
-            <Button disabled={locked || !identity || !castLink.trim() || network.moved} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details>
+            <Button disabled={locked || !identity || !castLink.trim() || network.moved} secondary onClick={() => void postCast(true)}>Verify this cast</Button></details></>}
         </Card>
         <Card title="Invite friends" help={() => setGuide("invites")}><dl className="v4-stats"><Stat label="Counted invites">{network.invites} of 10</Stat><Stat label="Invite boost">×{(1 + network.invites * 0.1).toFixed(1)}</Stat></dl>
           {network.inviter !== zeroAddress && <p className="v4-muted">Invited by {short(network.inviter)}</p>}
